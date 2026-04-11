@@ -1,0 +1,21 @@
+[package]
+name = "onde-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "onde"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+crossterm = { version = "0.28", features = ["event-stream"] }
+dirs = "5"
+futures = "0.3"
+log = "0.4"
+ratatui = "0.29"
+libc = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+smbcloud-auth-sdk = { path = "../smbcloud-cli/crates/smbcloud-auth-sdk" }
+smbcloud-model = { path = "../smbcloud-cli/crates/smbcloud-model" }
+smbcloud-network = { path = "../smbcloud-cli/crates/smbcloud-network" }
