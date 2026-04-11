@@ -2,6 +2,15 @@
 name = "onde-cli"
 version = "0.1.0"
 edition = "2024"
+description = "Terminal UI for signing up, signing in, and managing your Onde Inference account."
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ondeinference/onde-cli"
+homepage = "https://ondeinference.com"
+documentation = "https://docs.rs/onde-cli"
+readme = "README.md"
+keywords = ["onde", "cli", "tui", "auth", "inference"]
+categories = ["command-line-utilities"]
+authors = ["Seto Elkahfi <hej@setoelkahfi.se>"]
 
 [[bin]]
 name = "onde"
@@ -16,6 +25,9 @@ log = "0.4"
 ratatui = "0.29"
 libc = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-smbcloud-auth-sdk = { path = "../smbcloud-cli/crates/smbcloud-auth-sdk" }
-smbcloud-model = { path = "../smbcloud-cli/crates/smbcloud-model" }
-smbcloud-network = { path = "../smbcloud-cli/crates/smbcloud-network" }
+smbcloud-auth-sdk = { version = "0.3" }
+# smbcloud-auth-sdk = { path = "../smbcloud-cli/crates/smbcloud-auth-sdk" }
+smbcloud-model = { version = "0.3" }
+# smbcloud-model = { path = "../smbcloud-cli/crates/smbcloud-model" }
+smbcloud-network = { version = "0.3" }
+# smbcloud-network = { path = "../smbcloud-cli/crates/smbcloud-network" }
