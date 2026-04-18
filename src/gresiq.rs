@@ -52,3 +52,16 @@ pub async fn assign_model(
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))
 }
+
+pub async fn rename_app(token: &str, onde_app_id: &str, new_name: &str) -> anyhow::Result<OndeApp> {
+    smbcloud_gresiq_sdk::rename_app(
+        &Environment::Production,
+        crate::app::ONDE_APP_ID,
+        crate::app::ONDE_APP_SECRET,
+        token,
+        onde_app_id,
+        new_name,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))
+}
