@@ -31,3 +31,5 @@ smbcloud-model = { version = "0.3" }
 # smbcloud-model = { path = "../smbcloud-cli/crates/smbcloud-model" }
 smbcloud-network = { version = "0.3" }
 # smbcloud-network = { path = "../smbcloud-cli/crates/smbcloud-network" }
+# smbcloud-gresiq-sdk = { version = "0.1" }
+smbcloud-gresiq-sdk = { path = "../smbcloud-cli/crates/smbcloud-gresiq-sdk" }

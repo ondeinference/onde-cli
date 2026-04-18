@@ -740,6 +740,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1146,8 +1147,9 @@ dependencies = [
  "log",
  "ratatui",
  "smbcloud-auth-sdk",
- "smbcloud-model",
- "smbcloud-network",
+ "smbcloud-gresiq-sdk",
+ "smbcloud-model 0.3.35 (registry+https://github.com/rust-lang/crates.io-index)",
+ "smbcloud-network 0.3.35 (registry+https://github.com/rust-lang/crates.io-index)",
  "tokio",
 ]
 
@@ -1464,6 +1466,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "webpki-roots",
 ]
 
 [[package]]
@@ -1763,10 +1766,39 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "smbcloud-model",
- "smbcloud-network",
+ "smbcloud-model 0.3.35 (registry+https://github.com/rust-lang/crates.io-index)",
+ "smbcloud-network 0.3.35 (registry+https://github.com/rust-lang/crates.io-index)",
  "url-builder",
  "uuid",
+]
+
+[[package]]
+name = "smbcloud-gresiq-sdk"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "smbcloud-network 0.3.35",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "smbcloud-model"
+version = "0.3.35"
+dependencies = [
+ "chrono",
+ "log",
+ "serde",
+ "serde_json",
+ "serde_repr",
+ "spinners",
+ "strum 0.27.2",
+ "strum_macros 0.27.2",
+ "thiserror 2.0.18",
+ "tsync",
 ]
 
 [[package]]
@@ -1790,6 +1822,19 @@ dependencies = [
 [[package]]
 name = "smbcloud-network"
 version = "0.3.35"
+dependencies = [
+ "clap 4.6.0",
+ "log",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "smbcloud-model 0.3.35",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "smbcloud-network"
+version = "0.3.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c236db19d4cea01cf48b584838fcc898745514c8e01c1c0cad0cba976cabefb"
 dependencies = [
@@ -1798,7 +1843,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "smbcloud-model",
+ "smbcloud-model 0.3.35 (registry+https://github.com/rust-lang/crates.io-index)",
  "wasm-bindgen",
 ]
 
@@ -2505,6 +2550,15 @@ checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
+dependencies = [
+ "rustls-pki-types",
 ]
 
 [[package]]
