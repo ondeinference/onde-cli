@@ -39,6 +39,8 @@ pub enum Screen {
     Apps,
     AppDetail,
     Models,
+    Downloads,
+    ModelDetail,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,13 +106,23 @@ pub enum AuthEvent {
     AppsLoadFailed(String),
     AppCreated(OndeApp),
     AppCreateFailed(String),
-    AppRenamedOk { app_index: usize, new_name: String },
+    AppRenamedOk {
+        app_index: usize,
+        new_name: String,
+    },
     AppRenameFailed(String),
-    // models
+    // models (remote catalog for assignment)
     ModelsLoaded(Vec<OndeModel>),
     ModelsLoadFailed(String),
-    ModelAssigned { app_index: usize, model_id: String },
+    ModelAssigned {
+        app_index: usize,
+        model_id: String,
+    },
     ModelAssignFailed(String),
+    // downloads (catalog merged with local HF cache)
+    DownloadsLoaded(Vec<crate::hf::MergedModel>),
+    #[allow(dead_code)] // reserved for future explicit error reporting
+    DownloadsLoadFailed(String),
 }
 
 pub struct App {
@@ -130,7 +142,7 @@ pub struct App {
     pub apps_cursor: usize,
     pub apps_offset: usize,
     pub apps_loaded: bool,
-    // models list
+    // models list (remote catalog for assignment)
     pub models: Vec<OndeModel>,
     pub models_cursor: usize,
     pub models_offset: usize,
@@ -143,6 +155,11 @@ pub struct App {
     pub rename_input: String,
     // which app we're picking a model for
     pub assigning_for_app_index: Option<usize>,
+    // local HF cache downloads merged with remote catalog
+    pub downloads: Vec<crate::hf::MergedModel>,
+    pub downloads_cursor: usize,
+    pub downloads_offset: usize,
+    pub downloads_loaded: bool,
 }
 
 impl App {
@@ -170,6 +187,10 @@ impl App {
             renaming_app: false,
             rename_input: String::new(),
             assigning_for_app_index: None,
+            downloads: Vec::new(),
+            downloads_cursor: 0,
+            downloads_offset: 0,
+            downloads_loaded: false,
         }
     }
 
@@ -226,6 +247,10 @@ impl App {
                 self.renaming_app = false;
                 self.rename_input.clear();
                 self.assigning_for_app_index = None;
+                self.downloads.clear();
+                self.downloads_loaded = false;
+                self.downloads_cursor = 0;
+                self.downloads_offset = 0;
                 self.status = Status::neutral("Signed out.");
             }
             AuthEvent::Failed(message) => {
@@ -304,6 +329,26 @@ impl App {
             }
             AuthEvent::ModelAssignFailed(msg) => {
                 self.busy = false;
+                self.status = Status::error(msg);
+            }
+            // downloads
+            AuthEvent::DownloadsLoaded(models) => {
+                self.busy = false;
+                self.downloads = models;
+                self.downloads_loaded = true;
+                if self.downloads.is_empty() {
+                    self.status = Status::neutral("No models downloaded yet.");
+                } else {
+                    self.status = Status::success(format!(
+                        "{} model{} found.",
+                        self.downloads.len(),
+                        if self.downloads.len() == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+            AuthEvent::DownloadsLoadFailed(msg) => {
+                self.busy = false;
+                self.downloads_loaded = true;
                 self.status = Status::error(msg);
             }
         }
@@ -413,6 +458,8 @@ fn handle_key(
         Screen::Apps => handle_key_apps(app, key, tx),
         Screen::AppDetail => handle_key_app_detail(app, key, tx),
         Screen::Models => handle_key_models(app, key, tx),
+        Screen::Downloads => handle_key_downloads(app, key),
+        Screen::ModelDetail => handle_key_model_detail(app, key),
     }
 }
 
@@ -516,6 +563,14 @@ fn handle_key_apps(
             (Char('n'), KeyModifiers::NONE) => {
                 app.creating_app = true;
                 app.status = Status::neutral("Type a name and press Enter.");
+            }
+            (Tab, _) => {
+                app.screen = Screen::Downloads;
+                app.downloads_cursor = 0;
+                app.downloads_offset = 0;
+                app.downloads_loaded = false;
+                app.downloads.clear();
+                trigger_load_downloads(app, tx);
             }
             (Char('s'), KeyModifiers::NONE) | (Char('s'), KeyModifiers::CONTROL) => {
                 sign_out(app, tx);
@@ -653,6 +708,82 @@ fn clamp_apps_scroll(app: &mut App, max_visible: usize) {
         app.apps_offset = app.apps_cursor;
     } else if app.apps_cursor >= app.apps_offset + max_visible {
         app.apps_offset = app.apps_cursor + 1 - max_visible;
+    }
+}
+
+fn handle_key_downloads(app: &mut App, key: crossterm::event::KeyEvent) {
+    use KeyCode::*;
+
+    match (key.code, key.modifiers) {
+        (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+            app.downloads_cursor = app.downloads_cursor.saturating_sub(1);
+            clamp_downloads_scroll(app, MAX_VISIBLE);
+        }
+        (Down, _) | (Char('j'), KeyModifiers::NONE) => {
+            if app.downloads_cursor + 1 < app.downloads.len() {
+                app.downloads_cursor += 1;
+            }
+            clamp_downloads_scroll(app, MAX_VISIBLE);
+        }
+        (Enter, _) => {
+            if !app.downloads.is_empty() {
+                app.screen = Screen::ModelDetail;
+                app.status = Status::neutral("Model details.");
+            }
+        }
+        (Esc, _) | (Tab, _) => {
+            app.screen = Screen::Apps;
+            app.status = app.idle_status();
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        _ => {}
+    }
+}
+
+fn handle_key_model_detail(app: &mut App, key: crossterm::event::KeyEvent) {
+    use KeyCode::*;
+
+    match (key.code, key.modifiers) {
+        (Esc, _) => {
+            app.screen = Screen::Downloads;
+            app.status = Status::neutral("Back to models.");
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        _ => {}
+    }
+}
+
+fn trigger_load_downloads(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    if app.busy {
+        return;
+    }
+    let token = token::load().unwrap_or_default();
+    app.busy = true;
+    app.status = Status::neutral("Scanning models…");
+    tokio::spawn(async move {
+        // Fetch the remote catalog and scan the local cache concurrently.
+        let (catalog_result, local_result) = tokio::join!(
+            crate::gresiq::load_models(&token),
+            tokio::task::spawn_blocking(crate::hf::list_local_models),
+        );
+
+        let catalog = catalog_result.unwrap_or_default();
+        let local = local_result.unwrap_or_default();
+        let merged = crate::hf::merge_models(&catalog, local);
+
+        let _ = tx.send(AuthEvent::DownloadsLoaded(merged));
+    });
+}
+
+fn clamp_downloads_scroll(app: &mut App, max_visible: usize) {
+    if app.downloads_cursor < app.downloads_offset {
+        app.downloads_offset = app.downloads_cursor;
+    } else if app.downloads_cursor >= app.downloads_offset + max_visible {
+        app.downloads_offset = app.downloads_cursor + 1 - max_visible;
     }
 }
 

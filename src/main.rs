@@ -1,5 +1,6 @@
 mod app;
 mod gresiq;
+mod hf;
 mod token;
 mod ui;
 
