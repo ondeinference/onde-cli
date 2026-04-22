@@ -63,7 +63,7 @@ pub enum CacheSource {
 impl CacheSource {
     pub fn label(&self) -> &'static str {
         match self {
-            CacheSource::AppGroup => "App Group",
+            CacheSource::AppGroup => "Onde",
             CacheSource::HfCache => "HF Cache",
         }
     }
