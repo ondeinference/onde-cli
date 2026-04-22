@@ -1,5 +1,5 @@
 use {
-    crate::app::{App, FineTuneFocus, Focus, Mode, OndeApp, Screen, StatusTone},
+    crate::app::{App, ArtifactKind, FineTuneFocus, Focus, Mode, OndeApp, Screen, StatusTone},
     crate::hf::CacheSource,
     ratatui::{
         Frame,
@@ -1087,11 +1087,11 @@ fn render_model_detail(frame: &mut Frame, app: &App, area: Rect) {
         rows[26],
     );
 
-    // Adapters section
+    // Artifacts section (adapters + exported GGUFs)
     let adapter_heading = if app.adapter_list.is_empty() {
-        "LoRA Adapters"
+        "Artifacts"
     } else {
-        "LoRA Adapters  (↑↓ select · m merge & export)"
+        "Artifacts  (↑↓ select · Enter merge & export)"
     };
     frame.render_widget(
         Paragraph::new(adapter_heading).style(Style::new().fg(C_MUTED)),
@@ -1100,11 +1100,11 @@ fn render_model_detail(frame: &mut Frame, app: &App, area: Rect) {
     render_model_detail_adapters(frame, app, rows[29]);
 }
 
-/// Render the selectable adapter list inside the Model Detail screen.
+/// Render the selectable artifact list inside the Model Detail screen.
 fn render_model_detail_adapters(frame: &mut Frame, app: &App, area: Rect) {
     if app.adapter_list.is_empty() {
         frame.render_widget(
-            Paragraph::new("  No adapters found. Press f to fine-tune.")
+            Paragraph::new("  No artifacts found. Press f to fine-tune.")
                 .style(Style::new().fg(C_MUTED)),
             area,
         );
@@ -1130,17 +1130,32 @@ fn render_model_detail_adapters(frame: &mut Frame, app: &App, area: Rect) {
         };
         let meta_style = Style::new().fg(C_MUTED);
 
-        // Truncate dir_name for display
-        let dir_display = if adapter.dir_name.len() > 16 {
-            format!("{}…", &adapter.dir_name[..15])
+        // Kind badge + icon
+        let (kind_icon, kind_label) = match adapter.kind {
+            ArtifactKind::LoraAdapter => ("◆ ", "LoRA"),
+            ArtifactKind::Gguf => ("● ", "GGUF"),
+        };
+        let kind_color = match adapter.kind {
+            ArtifactKind::LoraAdapter => C_NEON,
+            ArtifactKind::Gguf => Color::Rgb(100, 200, 255),
+        };
+
+        // Show file_name for GGUF, dir_name for LoRA
+        let display_name = match adapter.kind {
+            ArtifactKind::Gguf => &adapter.file_name,
+            ArtifactKind::LoraAdapter => &adapter.dir_name,
+        };
+        let name_truncated = if display_name.len() > 28 {
+            format!("{}…", &display_name[..27])
         } else {
-            adapter.dir_name.clone()
+            display_name.clone()
         };
 
         let line = Line::from(vec![
             Span::styled(marker, marker_style),
-            Span::styled("◆ ", Style::new().fg(C_NEON)),
-            Span::styled(format!("{:<18}", dir_display), name_style),
+            Span::styled(kind_icon, Style::new().fg(kind_color)),
+            Span::styled(format!("{:<6}", kind_label), Style::new().fg(kind_color)),
+            Span::styled(format!("{:<30}", name_truncated), name_style),
             Span::styled(format!("{:<10}", adapter.size), meta_style),
             Span::styled(&adapter.modified, meta_style),
         ]);

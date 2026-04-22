@@ -44,17 +44,30 @@ pub enum Screen {
     FineTune,
 }
 
-/// A discovered LoRA adapter on disk.
+/// What kind of artifact was found on disk.
+#[derive(Clone, PartialEq)]
+pub enum ArtifactKind {
+    /// A LoRA adapter (lora_adapter.safetensors).
+    LoraAdapter,
+    /// An exported GGUF model (.gguf file).
+    Gguf,
+}
+
+/// A discovered artifact (adapter or exported model) on disk.
 #[derive(Clone)]
 pub struct AdapterEntry {
-    /// Full path to the `lora_adapter.safetensors` file.
+    /// Full path to the file.
     pub path: std::path::PathBuf,
     /// Directory name (snapshot hash or "lora-adapter").
     pub dir_name: String,
+    /// File name for GGUF files, or "lora_adapter.safetensors" for adapters.
+    pub file_name: String,
     /// Human-readable file size.
     pub size: String,
     /// Relative timestamp ("just now", "3h ago", etc.).
     pub modified: String,
+    /// Whether this is a LoRA adapter or a GGUF export.
+    pub kind: ArtifactKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1028,8 +1041,13 @@ fn handle_key_model_detail(
                 app.adapter_cursor += 1;
             }
         }
-        // Enter or 'm' — merge the selected adapter (skip fine-tuning)
-        (Enter, _) | (Char('m'), KeyModifiers::NONE) if !app.adapter_list.is_empty() => {
+        // Enter or 'm' — merge the selected LoRA adapter (skip fine-tuning)
+        (Enter, _) | (Char('m'), KeyModifiers::NONE)
+            if app
+                .adapter_list
+                .get(app.adapter_cursor)
+                .is_some_and(|a| a.kind == ArtifactKind::LoraAdapter) =>
+        {
             if let Some(adapter) = app.adapter_list.get(app.adapter_cursor) {
                 if let Some(model) = app.downloads.get(app.downloads_cursor) {
                     let resolved = resolve_hf_cache_path(&model.model_id);
@@ -1136,8 +1154,9 @@ fn resolve_hf_cache_path(model_id: &str) -> String {
     String::new()
 }
 
-/// Scan for existing `lora_adapter.safetensors` files under the model's snapshots
-/// directory. Returns entries sorted by modification time (newest first).
+/// Scan for existing `lora_adapter.safetensors` files and `.gguf` exports under
+/// the model's snapshots directory. Returns entries sorted by modification time
+/// (newest first).
 fn scan_adapters(model_dir: &str) -> Vec<AdapterEntry> {
     if model_dir.is_empty() {
         return Vec::new();
@@ -1146,10 +1165,10 @@ fn scan_adapters(model_dir: &str) -> Vec<AdapterEntry> {
         .parent()
         .unwrap_or_else(|| std::path::Path::new(""));
 
-    let mut adapters: Vec<AdapterEntry> = Vec::new();
+    let mut artifacts: Vec<AdapterEntry> = Vec::new();
 
     let Ok(entries) = std::fs::read_dir(snapshots_dir) else {
-        return adapters;
+        return artifacts;
     };
 
     for entry in entries.flatten() {
@@ -1157,43 +1176,54 @@ fn scan_adapters(model_dir: &str) -> Vec<AdapterEntry> {
         if !dir.is_dir() {
             continue;
         }
-        let adapter_file = dir.join("lora_adapter.safetensors");
-        if !adapter_file.exists() {
-            continue;
-        }
         let dir_name = entry.file_name().to_string_lossy().to_string();
-        let meta = std::fs::metadata(&adapter_file);
-        let size = meta
-            .as_ref()
-            .map(|m| format_adapter_size(m.len()))
-            .unwrap_or_else(|_| "–".to_string());
-        let modified = meta
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .map(|t| {
-                let elapsed = t.elapsed().unwrap_or_default();
-                let secs = elapsed.as_secs();
-                if secs < 60 {
-                    "just now".to_string()
-                } else if secs < 3600 {
-                    format!("{}m ago", secs / 60)
-                } else if secs < 86400 {
-                    format!("{}h ago", secs / 3600)
-                } else {
-                    format!("{}d ago", secs / 86400)
+
+        // Check for LoRA adapter
+        let adapter_file = dir.join("lora_adapter.safetensors");
+        if adapter_file.exists()
+            && let Some(ae) = make_artifact_entry(
+                &adapter_file,
+                &dir_name,
+                "lora_adapter.safetensors",
+                ArtifactKind::LoraAdapter,
+            )
+        {
+            artifacts.push(ae);
+        }
+
+        // Check for any .gguf files in this subdirectory
+        if let Ok(sub_entries) = std::fs::read_dir(&dir) {
+            for sub in sub_entries.flatten() {
+                let fname = sub.file_name().to_string_lossy().to_string();
+                if fname.ends_with(".gguf")
+                    && let Some(ae) =
+                        make_artifact_entry(&sub.path(), &dir_name, &fname, ArtifactKind::Gguf)
+                {
+                    artifacts.push(ae);
                 }
-            })
-            .unwrap_or_else(|| "–".to_string());
-        adapters.push(AdapterEntry {
-            path: adapter_file,
-            dir_name,
-            size,
-            modified,
-        });
+            }
+        }
     }
 
-    // Sort newest first (largest mtime string first is unreliable, use the file)
-    adapters.sort_by(|a, b| {
+    // Also check the snapshots parent directory itself for .gguf files
+    // (GGUF export writes to e.g. .../snapshots/model-finetuned-q8_0.gguf)
+    if let Ok(parent_entries) = std::fs::read_dir(snapshots_dir) {
+        for entry in parent_entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if fname.ends_with(".gguf")
+                    && let Some(ae) =
+                        make_artifact_entry(&path, "snapshots", &fname, ArtifactKind::Gguf)
+                {
+                    artifacts.push(ae);
+                }
+            }
+        }
+    }
+
+    // Sort newest first
+    artifacts.sort_by(|a, b| {
         let ma = std::fs::metadata(&a.path)
             .ok()
             .and_then(|m| m.modified().ok());
@@ -1203,7 +1233,42 @@ fn scan_adapters(model_dir: &str) -> Vec<AdapterEntry> {
         mb.cmp(&ma)
     });
 
-    adapters
+    artifacts
+}
+
+fn make_artifact_entry(
+    path: &std::path::Path,
+    dir_name: &str,
+    file_name: &str,
+    kind: ArtifactKind,
+) -> Option<AdapterEntry> {
+    let meta = std::fs::metadata(path).ok()?;
+    let size = format_adapter_size(meta.len());
+    let modified = meta
+        .modified()
+        .ok()
+        .map(|t| {
+            let elapsed = t.elapsed().unwrap_or_default();
+            let secs = elapsed.as_secs();
+            if secs < 60 {
+                "just now".to_string()
+            } else if secs < 3600 {
+                format!("{}m ago", secs / 60)
+            } else if secs < 86400 {
+                format!("{}h ago", secs / 3600)
+            } else {
+                format!("{}d ago", secs / 86400)
+            }
+        })
+        .unwrap_or_else(|| "–".to_string());
+    Some(AdapterEntry {
+        path: path.to_path_buf(),
+        dir_name: dir_name.to_string(),
+        file_name: file_name.to_string(),
+        size,
+        modified,
+        kind,
+    })
 }
 
 fn format_adapter_size(bytes: u64) -> String {
