@@ -84,6 +84,7 @@ fn render_card(frame: &mut Frame, app: &App, area: Rect) {
         Screen::Models => render_models(frame, app, inner),
         Screen::Downloads => render_downloads(frame, app, inner),
         Screen::ModelDetail => render_model_detail(frame, app, inner),
+        Screen::GgufDetail => render_gguf_detail(frame, app, inner),
         Screen::FineTune => render_finetune(frame, app, inner),
     }
 }
@@ -1171,6 +1172,225 @@ fn render_model_detail_adapters(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn render_gguf_detail(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(ref gguf) = app.selected_gguf else {
+        return;
+    };
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // 0  heading
+        Constraint::Length(1), // 1  spacer
+        Constraint::Length(1), // 2  status
+        Constraint::Length(1), // 3  spacer
+        Constraint::Length(1), // 4  File label
+        Constraint::Length(1), // 5  File value
+        Constraint::Length(1), // 6  spacer
+        Constraint::Length(1), // 7  Size label
+        Constraint::Length(1), // 8  Size value
+        Constraint::Length(1), // 9  spacer
+        Constraint::Length(1), // 10 Location label
+        Constraint::Length(3), // 11 Location value (bordered, wraps)
+        Constraint::Length(1), // 12 spacer
+        Constraint::Length(1), // 13 Upload heading
+        Constraint::Length(1), // 14 Repo Name label
+        Constraint::Length(3), // 15 Repo Name input
+        Constraint::Length(1), // 16 spacer
+        Constraint::Length(1), // 17 upload status / progress
+        Constraint::Length(1), // 18 spacer
+        Constraint::Min(0),    // 19 rest
+        Constraint::Length(1), // 20 hint
+    ])
+    .split(area);
+
+    // Heading
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("GGUF Model — {}", gguf.file_name),
+            Style::new().fg(C_INK).bold(),
+        ))),
+        rows[0],
+    );
+
+    render_status(frame, app, rows[2]);
+
+    // File name
+    render_detail_field(frame, "File", &gguf.file_name, rows[4], rows[5]);
+
+    // Size + modified
+    let size_modified = format!("{}   {}", gguf.size, gguf.modified);
+    render_detail_field(frame, "Size", &size_modified, rows[7], rows[8]);
+
+    // Full path in a bordered box
+    frame.render_widget(
+        Paragraph::new("Location").style(Style::new().fg(C_MUTED)),
+        rows[10],
+    );
+    let path_block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(C_LINE))
+        .style(Style::new().bg(C_SURFACE_STRONG));
+    let path_inner = path_block.inner(rows[11]);
+    frame.render_widget(path_block, rows[11]);
+    frame.render_widget(
+        Paragraph::new(gguf.path.to_string_lossy().to_string())
+            .style(Style::new().fg(C_NEON))
+            .wrap(Wrap { trim: true }),
+        path_inner,
+    );
+
+    // Upload section
+    frame.render_widget(
+        Paragraph::new("Upload to HuggingFace").style(Style::new().fg(C_MUTED)),
+        rows[13],
+    );
+
+    // Repo name input
+    frame.render_widget(
+        Paragraph::new("Repo Name").style(Style::new().fg(C_MUTED)),
+        rows[14],
+    );
+
+    let input_focused = !app.upload_running
+        && !matches!(
+            app.upload_progress,
+            Some(crate::hf_upload::UploadProgress::Done { .. })
+        );
+    let border_style = if input_focused {
+        Style::new().fg(C_NEON)
+    } else {
+        Style::new().fg(C_LINE)
+    };
+    let input_block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .style(Style::new().bg(C_SURFACE_STRONG));
+    let input_inner = input_block.inner(rows[15]);
+    frame.render_widget(input_block, rows[15]);
+    frame.render_widget(
+        Paragraph::new(app.upload_repo_name.as_str()).style(Style::new().fg(C_TEXT)),
+        input_inner,
+    );
+    if input_focused {
+        let cursor_x = (input_inner.x + app.upload_repo_name.chars().count() as u16)
+            .min(input_inner.x + input_inner.width.saturating_sub(1));
+        frame.set_cursor_position((cursor_x, input_inner.y));
+    }
+
+    // Upload progress / status
+    render_upload_status(frame, app, rows[17]);
+
+    // Hint
+    let hint = if app.upload_running {
+        "Ctrl+C · quit"
+    } else if matches!(
+        app.upload_progress,
+        Some(crate::hf_upload::UploadProgress::Done { .. })
+    ) {
+        "Esc · back"
+    } else {
+        "Enter · upload    Esc · back"
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::new().fg(C_MUTED)),
+        rows[20],
+    );
+}
+
+fn render_upload_status(frame: &mut Frame, app: &App, area: Rect) {
+    match &app.upload_progress {
+        Some(crate::hf_upload::UploadProgress::CreatingRepo) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Creating repository…").style(Style::new().fg(C_MUTED)),
+                area,
+            );
+        }
+        Some(crate::hf_upload::UploadProgress::Hashing {
+            bytes_done,
+            bytes_total,
+        }) => {
+            let pct = if *bytes_total > 0 {
+                (*bytes_done as f64 / *bytes_total as f64 * 100.0) as u64
+            } else {
+                0
+            };
+            frame.render_widget(
+                Paragraph::new(format!("⠿ Hashing… {}%", pct)).style(Style::new().fg(C_MUTED)),
+                area,
+            );
+        }
+        Some(crate::hf_upload::UploadProgress::Committing) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Creating commit…").style(Style::new().fg(C_MUTED)),
+                area,
+            );
+        }
+        Some(crate::hf_upload::UploadProgress::Uploading {
+            bytes_sent,
+            bytes_total,
+        }) => {
+            let pct = if *bytes_total > 0 {
+                (*bytes_sent as f64 / *bytes_total as f64 * 100.0) as u64
+            } else {
+                0
+            };
+            let sent_str = fmt_bytes(*bytes_sent as i64);
+            let total_str = fmt_bytes(*bytes_total as i64);
+            let bar_width = area.width.saturating_sub(30) as usize;
+            let filled = if *bytes_total > 0 {
+                (*bytes_sent as f64 / *bytes_total as f64 * bar_width as f64) as usize
+            } else {
+                0
+            };
+            let empty = bar_width.saturating_sub(filled);
+            let bar = format!(
+                "{}{} {}/{}  {}%",
+                "█".repeat(filled),
+                "░".repeat(empty),
+                sent_str,
+                total_str,
+                pct
+            );
+            frame.render_widget(Paragraph::new(bar).style(Style::new().fg(C_NEON)), area);
+        }
+        Some(crate::hf_upload::UploadProgress::Done { url }) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✓ ", Style::new().fg(C_NEON)),
+                    Span::styled("Uploaded → ", Style::new().fg(C_NEON).bold()),
+                    Span::styled(url.as_str(), Style::new().fg(C_TEXT)),
+                ])),
+                area,
+            );
+        }
+        Some(crate::hf_upload::UploadProgress::Failed(msg)) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✗ Upload failed: ", Style::new().fg(C_DANGER).bold()),
+                    Span::styled(msg.as_str(), Style::new().fg(C_DANGER)),
+                ])),
+                area,
+            );
+        }
+        None => {
+            if crate::app::HF_TOKEN.is_empty() {
+                frame.render_widget(
+                    Paragraph::new("⚠ No HF_TOKEN in .env — upload disabled")
+                        .style(Style::new().fg(C_DANGER)),
+                    area,
+                );
+            } else {
+                frame.render_widget(
+                    Paragraph::new("Ready to upload. Press Enter to start.")
+                        .style(Style::new().fg(C_MUTED)),
+                    area,
+                );
+            }
+        }
+    }
+}
+
 fn fmt_bytes(bytes: i64) -> String {
     if bytes >= 1_000_000_000 {
         format!("{:.1}GB", bytes as f64 / 1e9)
@@ -1897,6 +2117,18 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             keys.push(Span::styled(" · quit", Style::new().fg(C_MUTED)));
             keys
         }
+        Screen::GgufDetail if app.upload_running => vec![
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::GgufDetail => vec![
+            Span::styled("Enter", Style::new().fg(C_NEON)),
+            Span::styled(" · upload    ", Style::new().fg(C_MUTED)),
+            Span::styled("Esc", Style::new().fg(C_NEON)),
+            Span::styled(" · back    ", Style::new().fg(C_MUTED)),
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
     };
 
     frame.render_widget(
