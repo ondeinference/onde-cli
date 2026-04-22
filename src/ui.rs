@@ -682,7 +682,7 @@ fn render_downloads(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1), // spacer
         Constraint::Length(1), // column header
         Constraint::Length(1), // divider
-        Constraint::Min(0),    // list + hint
+        Constraint::Min(0),    // body
     ])
     .split(area);
 
@@ -697,9 +697,14 @@ fn render_downloads(frame: &mut Frame, app: &App, area: Rect) {
     render_nav_tabs(frame, app, top[2]);
     render_status(frame, app, top[4]);
 
+    // Column header changes based on state.
+    let col_header = if app.hf_search_active {
+        "  Model                                        Downloads"
+    } else {
+        "  Model                                   Size       Source"
+    };
     frame.render_widget(
-        Paragraph::new("  Model                                   Size       Source")
-            .style(Style::new().fg(C_MUTED)),
+        Paragraph::new(col_header).style(Style::new().fg(C_MUTED)),
         top[6],
     );
 
@@ -709,18 +714,25 @@ fn render_downloads(frame: &mut Frame, app: &App, area: Rect) {
         top[7],
     );
 
-    let bottom = Layout::vertical([
-        Constraint::Min(0),    // list
-        Constraint::Length(1), // hint
-    ])
-    .split(top[8]);
+    if app.downloading {
+        render_download_progress_panel(frame, app, top[8]);
+    } else if app.hf_search_active {
+        render_hf_search_panel(frame, app, top[8]);
+    } else {
+        let bottom = Layout::vertical([
+            Constraint::Min(0),    // list
+            Constraint::Length(1), // hint
+        ])
+        .split(top[8]);
 
-    render_downloads_list(frame, app, bottom[0]);
+        render_downloads_list(frame, app, bottom[0]);
 
-    frame.render_widget(
-        Paragraph::new("↑↓ · navigate   Tab · apps").style(Style::new().fg(C_MUTED)),
-        bottom[1],
-    );
+        frame.render_widget(
+            Paragraph::new("↑↓ · navigate   / · search HF   Tab · apps")
+                .style(Style::new().fg(C_MUTED)),
+            bottom[1],
+        );
+    }
 }
 
 fn render_downloads_list(frame: &mut Frame, app: &App, area: Rect) {
@@ -791,6 +803,181 @@ fn render_downloads_list(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 // model detail screen
+
+fn render_hf_search_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::vertical([
+        Constraint::Length(1), // "Search HuggingFace Hub" label
+        Constraint::Length(3), // search input box
+        Constraint::Length(1), // spacer
+        Constraint::Min(0),    // results list
+        Constraint::Length(1), // hint
+    ])
+    .split(area);
+
+    frame.render_widget(
+        Paragraph::new("Search HuggingFace Hub").style(Style::new().fg(C_MUTED)),
+        rows[0],
+    );
+
+    // Search input — always neon-bordered (it's always focused when active).
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(C_NEON))
+        .style(Style::new().bg(C_SURFACE_STRONG));
+    let inner = block.inner(rows[1]);
+    frame.render_widget(block, rows[1]);
+
+    let display_query = if app.hf_search_loading {
+        format!("{} ⠿", app.hf_search_query)
+    } else {
+        app.hf_search_query.clone()
+    };
+    frame.render_widget(
+        Paragraph::new(display_query.as_str()).style(Style::new().fg(C_TEXT)),
+        inner,
+    );
+
+    // Show cursor only when not loading.
+    if !app.hf_search_loading {
+        let cursor_x = (inner.x + app.hf_search_query.chars().count() as u16)
+            .min(inner.x + inner.width.saturating_sub(1));
+        frame.set_cursor_position((cursor_x, inner.y));
+    }
+
+    // Results area.
+    if app.hf_search_results.is_empty() && !app.hf_search_loading {
+        frame.render_widget(
+            Paragraph::new("  Type a query and press Enter to search.")
+                .style(Style::new().fg(C_MUTED)),
+            rows[3],
+        );
+    } else {
+        render_hf_results_list(frame, app, rows[3]);
+    }
+
+    let hint = if app.hf_search_loading {
+        "Searching…"
+    } else if app.hf_search_results.is_empty() {
+        "Enter · search   Esc · cancel"
+    } else {
+        "↑↓ · navigate   Enter · download   Esc · cancel"
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::new().fg(C_MUTED)),
+        rows[4],
+    );
+}
+
+fn render_hf_results_list(frame: &mut Frame, app: &App, area: Rect) {
+    let max_rows = area.height as usize;
+    for (i, model) in app.hf_search_results.iter().enumerate().take(max_rows) {
+        let row_y = area.y + i as u16;
+        let row_area = Rect::new(area.x, row_y, area.width, 1);
+        let is_selected = i == app.hf_search_cursor;
+        let prefix = if is_selected { "▶ " } else { "  " };
+
+        let dl_str = format_downloads(model.downloads);
+        // Truncate model_id to keep the line from wrapping.
+        let max_id_len = (area.width as usize).saturating_sub(12);
+        let model_id_display = if model.model_id.len() > max_id_len {
+            format!("{}…", &model.model_id[..max_id_len.saturating_sub(1)])
+        } else {
+            model.model_id.clone()
+        };
+        let left = format!("{}{:<44}", prefix, model_id_display);
+
+        let text_style = if is_selected {
+            Style::new().fg(C_NEON)
+        } else {
+            Style::new().fg(C_TEXT)
+        };
+
+        let line = Line::from(vec![
+            Span::styled(left, text_style),
+            Span::styled(dl_str, Style::new().fg(C_MUTED)),
+        ]);
+        frame.render_widget(Paragraph::new(line), row_area);
+    }
+}
+
+fn format_downloads(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M ↓", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.0}K ↓", n as f64 / 1_000.0)
+    } else if n > 0 {
+        format!("{n} ↓")
+    } else {
+        "–".to_string()
+    }
+}
+
+fn render_download_progress_panel(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::vertical([
+        Constraint::Length(1), // model ID heading
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // filename
+        Constraint::Length(1), // progress bar
+        Constraint::Length(1), // byte count
+        Constraint::Min(0),    // spacer
+        Constraint::Length(1), // hint
+    ])
+    .split(area);
+
+    if let Some(dp) = &app.download_progress {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("⠿ ", Style::new().fg(C_NEON)),
+                Span::styled(dp.model_id.as_str(), Style::new().fg(C_INK).bold()),
+            ])),
+            rows[0],
+        );
+
+        let file_label = format!(
+            "File {}/{}: {}",
+            dp.file_index + 1,
+            dp.total_files,
+            dp.filename
+        );
+        frame.render_widget(
+            Paragraph::new(file_label).style(Style::new().fg(C_TEXT)),
+            rows[2],
+        );
+
+        // Progress bar.
+        let progress = if dp.file_bytes_total > 0 {
+            dp.file_bytes_done as f64 / dp.file_bytes_total as f64
+        } else {
+            0.0
+        };
+        let bar_width = area.width.saturating_sub(4) as usize;
+        let filled = (progress * bar_width as f64) as usize;
+        let empty = bar_width.saturating_sub(filled);
+        let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+        frame.render_widget(Paragraph::new(bar).style(Style::new().fg(C_NEON)), rows[3]);
+
+        let bytes_label = format!(
+            "{} / {}",
+            fmt_bytes(dp.file_bytes_done as i64),
+            fmt_bytes(dp.file_bytes_total as i64),
+        );
+        frame.render_widget(
+            Paragraph::new(bytes_label).style(Style::new().fg(C_MUTED)),
+            rows[4],
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new("⠿ Starting download…").style(Style::new().fg(C_MUTED)),
+            rows[0],
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new("Ctrl+C · quit").style(Style::new().fg(C_MUTED)),
+        rows[6],
+    );
+}
 
 fn render_model_detail(frame: &mut Frame, app: &App, area: Rect) {
     let Some(model) = app.downloads.get(app.downloads_cursor) else {
@@ -1249,9 +1436,25 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
             Span::styled(" · quit", Style::new().fg(C_MUTED)),
         ],
+        Screen::Downloads if app.downloading => vec![
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::Downloads if app.hf_search_active => vec![
+            Span::styled("Enter", Style::new().fg(C_NEON)),
+            Span::styled(" · search / download    ", Style::new().fg(C_MUTED)),
+            Span::styled("↑↓", Style::new().fg(C_NEON)),
+            Span::styled(" · navigate    ", Style::new().fg(C_MUTED)),
+            Span::styled("Esc", Style::new().fg(C_NEON)),
+            Span::styled(" · cancel    ", Style::new().fg(C_MUTED)),
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
         Screen::Downloads => vec![
             Span::styled("↑↓", Style::new().fg(C_NEON)),
             Span::styled(" · navigate    ", Style::new().fg(C_MUTED)),
+            Span::styled("/", Style::new().fg(C_NEON)),
+            Span::styled(" · search HF    ", Style::new().fg(C_MUTED)),
             Span::styled("Enter", Style::new().fg(C_NEON)),
             Span::styled(" · detail    ", Style::new().fg(C_MUTED)),
             Span::styled("Tab", Style::new().fg(C_NEON)),

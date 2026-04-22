@@ -133,6 +133,13 @@ pub enum AuthEvent {
     DownloadsLoaded(Vec<crate::hf::MergedModel>),
     #[allow(dead_code)] // reserved for future explicit error reporting
     DownloadsLoadFailed(String),
+    // HF Hub search
+    HfSearchResults(Vec<crate::hf_search::HfModelInfo>),
+    HfSearchFailed(String),
+    // Model download
+    ModelDownloadProgress(crate::hf_search::DownloadProgress),
+    ModelDownloadComplete(String), // model_id
+    ModelDownloadFailed(String),
     // fine-tune
     FineTuneProgress(crate::finetune::FineTuneProgress),
 }
@@ -172,6 +179,15 @@ pub struct App {
     pub downloads_cursor: usize,
     pub downloads_offset: usize,
     pub downloads_loaded: bool,
+    // HF Hub search
+    pub hf_search_active: bool,
+    pub hf_search_query: String,
+    pub hf_search_results: Vec<crate::hf_search::HfModelInfo>,
+    pub hf_search_cursor: usize,
+    pub hf_search_loading: bool,
+    // Model download (runs in background, does not set app.busy)
+    pub downloading: bool,
+    pub download_progress: Option<crate::hf_search::DownloadProgress>,
     // fine-tune
     pub finetune_model_id: String,
     pub finetune_model_dir: String,
@@ -213,6 +229,13 @@ impl App {
             downloads_cursor: 0,
             downloads_offset: 0,
             downloads_loaded: false,
+            hf_search_active: false,
+            hf_search_query: String::new(),
+            hf_search_results: Vec::new(),
+            hf_search_cursor: 0,
+            hf_search_loading: false,
+            downloading: false,
+            download_progress: None,
             finetune_model_id: String::new(),
             finetune_model_dir: String::new(),
             finetune_data_path: "~/.onde/finetune/train.jsonl".to_string(),
@@ -243,7 +266,17 @@ impl App {
     }
 
     pub fn apply(&mut self, event: AuthEvent) {
-        self.busy = false;
+        // Download and search events run in the background without the busy flag.
+        match &event {
+            AuthEvent::ModelDownloadProgress(_)
+            | AuthEvent::ModelDownloadComplete(_)
+            | AuthEvent::ModelDownloadFailed(_)
+            | AuthEvent::HfSearchResults(_)
+            | AuthEvent::HfSearchFailed(_) => {}
+            _ => {
+                self.busy = false;
+            }
+        }
         match event {
             // auth
             AuthEvent::SignupOk(message) => {
@@ -392,6 +425,38 @@ impl App {
                 }
                 self.finetune_progress = Some(progress);
             }
+            AuthEvent::HfSearchResults(results) => {
+                self.hf_search_loading = false;
+                self.hf_search_cursor = 0;
+                self.hf_search_results = results;
+                self.status = if self.hf_search_results.is_empty() {
+                    Status::neutral("No models found.")
+                } else {
+                    Status::neutral(format!("{} models found.", self.hf_search_results.len()))
+                };
+            }
+            AuthEvent::HfSearchFailed(msg) => {
+                self.hf_search_loading = false;
+                self.status = Status::error(msg);
+            }
+            AuthEvent::ModelDownloadProgress(progress) => {
+                self.download_progress = Some(progress);
+            }
+            AuthEvent::ModelDownloadComplete(model_id) => {
+                self.downloading = false;
+                self.download_progress = None;
+                self.hf_search_active = false;
+                self.hf_search_query.clear();
+                self.hf_search_results.clear();
+                self.hf_search_cursor = 0;
+                self.downloads_loaded = false; // triggers list reload
+                self.status = Status::success(format!("{model_id} downloaded."));
+            }
+            AuthEvent::ModelDownloadFailed(msg) => {
+                self.downloading = false;
+                self.download_progress = None;
+                self.status = Status::error(msg);
+            }
         }
     }
 }
@@ -442,6 +507,15 @@ pub async fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                         && !app.busy
                     {
                         trigger_load_apps(&mut app, tx.clone());
+                    }
+                    // Reload downloads list after a successful download.
+                    if app.profile.is_some()
+                        && app.screen == Screen::Downloads
+                        && !app.downloads_loaded
+                        && !app.busy
+                        && !app.downloading
+                    {
+                        trigger_load_downloads(&mut app, tx.clone());
                     }
                 }
             }
@@ -499,7 +573,7 @@ fn handle_key(
         Screen::Apps => handle_key_apps(app, key, tx),
         Screen::AppDetail => handle_key_app_detail(app, key, tx),
         Screen::Models => handle_key_models(app, key, tx),
-        Screen::Downloads => handle_key_downloads(app, key),
+        Screen::Downloads => handle_key_downloads(app, key, tx),
         Screen::ModelDetail => handle_key_model_detail(app, key),
         Screen::FineTune => handle_key_finetune(app, key, tx),
     }
@@ -753,9 +827,76 @@ fn clamp_apps_scroll(app: &mut App, max_visible: usize) {
     }
 }
 
-fn handle_key_downloads(app: &mut App, key: crossterm::event::KeyEvent) {
+fn handle_key_downloads(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
     use KeyCode::*;
 
+    // While a download is running, only allow quit.
+    if app.downloading {
+        if matches!(
+            (key.code, key.modifiers),
+            (Char('c'), KeyModifiers::CONTROL)
+        ) {
+            app.should_quit = true;
+        }
+        return;
+    }
+
+    if app.hf_search_active {
+        match (key.code, key.modifiers) {
+            (Esc, _) => {
+                app.hf_search_active = false;
+                app.hf_search_query.clear();
+                app.hf_search_results.clear();
+                app.hf_search_cursor = 0;
+                app.hf_search_loading = false;
+                app.status = Status::neutral("Search cancelled.");
+            }
+            (Enter, _) => {
+                if !app.hf_search_results.is_empty() {
+                    trigger_download(app, tx);
+                } else if !app.hf_search_query.trim().is_empty() && !app.hf_search_loading {
+                    trigger_hf_search(app, tx);
+                }
+            }
+            (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+                app.hf_search_cursor = app.hf_search_cursor.saturating_sub(1);
+            }
+            (Down, _) | (Char('j'), KeyModifiers::NONE) => {
+                if app.hf_search_cursor + 1 < app.hf_search_results.len() {
+                    app.hf_search_cursor += 1;
+                }
+            }
+            (Backspace, _) => {
+                if !app.hf_search_results.is_empty() {
+                    // Editing query clears old results.
+                    app.hf_search_results.clear();
+                    app.hf_search_cursor = 0;
+                }
+                if app.hf_search_query.pop().is_none() {
+                    app.hf_search_active = false;
+                }
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                // Editing query clears old results.
+                if !app.hf_search_results.is_empty() {
+                    app.hf_search_results.clear();
+                    app.hf_search_cursor = 0;
+                }
+                app.hf_search_query.push(c);
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // Normal Downloads screen navigation.
     match (key.code, key.modifiers) {
         (Up, _) | (Char('k'), KeyModifiers::NONE) => {
             app.downloads_cursor = app.downloads_cursor.saturating_sub(1);
@@ -772,6 +913,14 @@ fn handle_key_downloads(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.screen = Screen::ModelDetail;
                 app.status = Status::neutral("Model details.");
             }
+        }
+        (Char('/'), KeyModifiers::NONE) => {
+            app.hf_search_active = true;
+            app.hf_search_query.clear();
+            app.hf_search_results.clear();
+            app.hf_search_cursor = 0;
+            app.hf_search_loading = false;
+            app.status = Status::neutral("Search HuggingFace Hub.");
         }
         (Esc, _) | (Tab, _) => {
             app.screen = Screen::Apps;
@@ -975,6 +1124,67 @@ fn handle_key_finetune(
         },
         _ => {}
     }
+}
+
+fn trigger_hf_search(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    let query = app.hf_search_query.trim().to_string();
+    if query.is_empty() {
+        return;
+    }
+    app.hf_search_loading = true;
+    app.hf_search_results.clear();
+    app.hf_search_cursor = 0;
+    app.status = Status::neutral(format!("Searching for \"{query}\"…"));
+    tokio::spawn(async move {
+        match crate::hf_search::search_hf(&query).await {
+            Ok(results) => {
+                let _ = tx.send(AuthEvent::HfSearchResults(results));
+            }
+            Err(e) => {
+                let _ = tx.send(AuthEvent::HfSearchFailed(e.to_string()));
+            }
+        }
+    });
+}
+
+fn trigger_download(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    let Some(model) = app.hf_search_results.get(app.hf_search_cursor) else {
+        return;
+    };
+    let model_id = model.model_id.clone();
+    let hub = crate::hf::preferred_download_hub();
+
+    app.downloading = true;
+    app.download_progress = None;
+    app.status = Status::neutral(format!("Downloading {model_id}…"));
+
+    let (dl_tx, mut dl_rx) = mpsc::unbounded_channel::<crate::hf_search::DownloadEvent>();
+
+    // Task 1: run the download and send DownloadEvents.
+    let model_id_clone = model_id.clone();
+    tokio::spawn(async move {
+        crate::hf_search::download_model(model_id_clone, hub, dl_tx).await;
+    });
+
+    // Task 2: forward DownloadEvents → AuthEvents.
+    let auth_tx = tx.clone();
+    tokio::spawn(async move {
+        while let Some(event) = dl_rx.recv().await {
+            match event {
+                crate::hf_search::DownloadEvent::Progress(p) => {
+                    let _ = auth_tx.send(AuthEvent::ModelDownloadProgress(p));
+                }
+                crate::hf_search::DownloadEvent::Complete => {
+                    let _ = auth_tx.send(AuthEvent::ModelDownloadComplete(model_id.clone()));
+                    break;
+                }
+                crate::hf_search::DownloadEvent::Failed(e) => {
+                    let _ = auth_tx.send(AuthEvent::ModelDownloadFailed(e));
+                    break;
+                }
+            }
+        }
+    });
 }
 
 fn trigger_load_downloads(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {

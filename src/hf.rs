@@ -307,3 +307,23 @@ pub fn list_local_models() -> Vec<LocalModel> {
     models.sort_by_key(|m| m.model_id.to_lowercase());
     models
 }
+
+/// Returns the preferred hub directory for downloading new models.
+///
+/// On macOS, prefers the App Group container so downloads are shared with
+/// the Onde Inference apps. Falls back to the standard HF home cache, then
+/// `~/.cache/huggingface/hub` as a last resort.
+pub fn preferred_download_hub() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    if let Some(p) = app_group_hub() {
+        return p;
+    }
+
+    if let Some(p) = hf_home_hub() {
+        return p;
+    }
+
+    dirs::home_dir()
+        .map(|h| h.join(".cache").join("huggingface").join("hub"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".cache/huggingface/hub"))
+}

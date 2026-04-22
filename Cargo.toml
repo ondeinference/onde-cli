@@ -27,6 +27,7 @@ futures = "0.3"
 log = "0.4"
 ratatui = "0.29"
 libc = "0.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 smbcloud-auth-sdk = { path = "../smbcloud-cli/crates/smbcloud-auth-sdk" }
 smbcloud-model = { path = "../smbcloud-cli/crates/smbcloud-model" }
