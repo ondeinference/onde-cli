@@ -181,7 +181,11 @@ fn scan_dir(dir: &PathBuf, source: CacheSource) -> Vec<LocalModel> {
 
         let remainder = &dir_name["models--".len()..];
         let model_id = remainder.replace("--", "/");
-        let display_name = model_id.split('/').last().unwrap_or(&model_id).to_string();
+        let display_name = model_id
+            .split('/')
+            .next_back()
+            .unwrap_or(&model_id)
+            .to_string();
 
         let size_bytes = dir_size(&path);
 
@@ -234,7 +238,7 @@ pub fn merge_models(catalog: &[OndeModel], local: Vec<LocalModel>) -> Vec<Merged
         let display_name = cm
             .name
             .as_deref()
-            .unwrap_or_else(|| hf_id.split('/').last().unwrap_or(hf_id))
+            .unwrap_or_else(|| hf_id.split('/').next_back().unwrap_or(hf_id))
             .to_string();
 
         merged.push(MergedModel {

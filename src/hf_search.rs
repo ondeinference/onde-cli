@@ -22,6 +22,7 @@ pub struct HfModelInfo {
     #[serde(default)]
     pub downloads: u64,
     #[serde(default)]
+    #[allow(dead_code)]
     pub tags: Vec<String>,
     /// Commit SHA of the latest revision.
     pub sha: Option<String>,

@@ -29,19 +29,30 @@ ratatui = "0.29"
 libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
-smbcloud-auth-sdk = { path = "../smbcloud-cli/crates/smbcloud-auth-sdk" }
-smbcloud-model = { path = "../smbcloud-cli/crates/smbcloud-model" }
-smbcloud-network = { path = "../smbcloud-cli/crates/smbcloud-network" }
-smbcloud-gresiq-sdk = { path = "../smbcloud-cli/crates/smbcloud-gresiq-sdk" }
-
-candle-core = { path = "../candle/candle-core", features = ["metal", "accelerate"] }
-candle-nn = { path = "../candle/candle-nn" }
+smbcloud-auth-sdk = "0.3.34"
+smbcloud-model = "0.3.35"
+smbcloud-network = "0.3.35"
+smbcloud-gresiq-sdk = "0.3.35"
+candle-core = "0.10.2"
+candle-nn = "0.10.2"
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# To publish to crates.io, switch back to version specs and remove path deps:
-# smbcloud-auth-sdk = { version = "0.3" }
-# smbcloud-model = { version = "0.3" }
-# smbcloud-network = { version = "0.3" }
-# smbcloud-gresiq-sdk = { version = "0.1" }
+# Metal and Accelerate are macOS-only frameworks; Cargo merges features so on
+# macOS these are added on top of the base candle-core dep above.
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { version = "0.10.2", features = ["metal", "accelerate"] }
+
+# ---------------------------------------------------------------------------
+# Local development overrides
+# Uncomment the [patch.crates-io] block below to use path deps while working
+# on the upstream crates alongside onde-cli.  Never commit with this active.
+# ---------------------------------------------------------------------------
+# [patch.crates-io]
+# smbcloud-auth-sdk   = { path = "../smbcloud-cli/crates/smbcloud-auth-sdk" }
+# smbcloud-model      = { path = "../smbcloud-cli/crates/smbcloud-model" }
+# smbcloud-network    = { path = "../smbcloud-cli/crates/smbcloud-network" }
+# smbcloud-gresiq-sdk = { path = "../smbcloud-cli/crates/smbcloud-gresiq-sdk" }
+# candle-core         = { path = "../candle/candle-core" }
+# candle-nn           = { path = "../candle/candle-nn" }

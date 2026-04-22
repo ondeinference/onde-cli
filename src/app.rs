@@ -661,20 +661,17 @@ fn handle_key_apps(
                 }
                 clamp_apps_scroll(app, MAX_VISIBLE);
             }
-            (Enter, _) => {
-                if !app.apps.is_empty() {
-                    app.screen = Screen::AppDetail;
-                    app.renaming_app = false;
-                    app.rename_input.clear();
-                    let app_name = app
-                        .apps
-                        .get(app.apps_cursor)
-                        .map(|a| a.name.as_str())
-                        .unwrap_or("app");
-                    app.status = Status::neutral(format!(
-                        "{app_name} — m · model   r · rename   Esc · back"
-                    ));
-                }
+            (Enter, _) if !app.apps.is_empty() => {
+                app.screen = Screen::AppDetail;
+                app.renaming_app = false;
+                app.rename_input.clear();
+                let app_name = app
+                    .apps
+                    .get(app.apps_cursor)
+                    .map(|a| a.name.as_str())
+                    .unwrap_or("app");
+                app.status =
+                    Status::neutral(format!("{app_name} — m · model   r · rename   Esc · back"));
             }
             (Char('n'), KeyModifiers::NONE) => {
                 app.creating_app = true;
@@ -865,10 +862,10 @@ fn handle_key_downloads(
             (Up, _) | (Char('k'), KeyModifiers::NONE) => {
                 app.hf_search_cursor = app.hf_search_cursor.saturating_sub(1);
             }
-            (Down, _) | (Char('j'), KeyModifiers::NONE) => {
-                if app.hf_search_cursor + 1 < app.hf_search_results.len() {
-                    app.hf_search_cursor += 1;
-                }
+            (Down, _) | (Char('j'), KeyModifiers::NONE)
+                if app.hf_search_cursor + 1 < app.hf_search_results.len() =>
+            {
+                app.hf_search_cursor += 1;
             }
             (Backspace, _) => {
                 if !app.hf_search_results.is_empty() {
@@ -908,11 +905,9 @@ fn handle_key_downloads(
             }
             clamp_downloads_scroll(app, MAX_VISIBLE);
         }
-        (Enter, _) => {
-            if !app.downloads.is_empty() {
-                app.screen = Screen::ModelDetail;
-                app.status = Status::neutral("Model details.");
-            }
+        (Enter, _) if !app.downloads.is_empty() => {
+            app.screen = Screen::ModelDetail;
+            app.status = Status::neutral("Model details.");
         }
         (Char('/'), KeyModifiers::NONE) => {
             app.hf_search_active = true;
@@ -1058,12 +1053,12 @@ fn handle_key_finetune(
 
             // Expand ~ in paths
             let expand = |s: &str| -> String {
-                if let Some(rest) = s.strip_prefix("~/") {
-                    if let Some(home) = dirs::home_dir() {
-                        return home.join(rest).to_string_lossy().to_string();
-                    }
-                }
-                s.to_string()
+                dirs::home_dir()
+                    .and_then(|home| {
+                        s.strip_prefix("~/")
+                            .map(|rest| home.join(rest).to_string_lossy().to_string())
+                    })
+                    .unwrap_or_else(|| s.to_string())
             };
 
             let model_dir = std::path::PathBuf::from(expand(&app.finetune_model_dir));
