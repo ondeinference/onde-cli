@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "onde-cli"
-description = "Terminal UI for signing up, signing in, and managing your Onde Inference account."
+description = "Terminal UI for Onde Inference models, apps, and account management."
 readme = "README.md"
 requires-python = ">=3.8"
 dynamic = ["version"]
