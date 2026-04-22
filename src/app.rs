@@ -1058,12 +1058,12 @@ fn handle_key_finetune(
 
             // Expand ~ in paths
             let expand = |s: &str| -> String {
-                if let Some(rest) = s.strip_prefix("~/") {
-                    if let Some(home) = dirs::home_dir() {
-                        return home.join(rest).to_string_lossy().to_string();
-                    }
-                }
-                s.to_string()
+                dirs::home_dir()
+                    .and_then(|home| {
+                        s.strip_prefix("~/")
+                            .map(|rest| home.join(rest).to_string_lossy().to_string())
+                    })
+                    .unwrap_or_else(|| s.to_string())
             };
 
             let model_dir = std::path::PathBuf::from(expand(&app.finetune_model_dir));

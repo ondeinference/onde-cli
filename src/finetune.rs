@@ -610,6 +610,7 @@ struct LoraQwenModel {
     rope_cos: Tensor, // [max_seq_len, head_dim]
     rope_sin: Tensor, // [max_seq_len, head_dim]
     hidden_size: usize,
+    #[allow(dead_code)]
     vocab_size: usize,
     rms_norm_eps: f64,
 }
