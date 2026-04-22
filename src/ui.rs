@@ -1,5 +1,5 @@
 use {
-    crate::app::{App, Focus, Mode, OndeApp, Screen, StatusTone},
+    crate::app::{App, FineTuneFocus, Focus, Mode, OndeApp, Screen, StatusTone},
     crate::hf::CacheSource,
     ratatui::{
         Frame,
@@ -84,6 +84,7 @@ fn render_card(frame: &mut Frame, app: &App, area: Rect) {
         Screen::Models => render_models(frame, app, inner),
         Screen::Downloads => render_downloads(frame, app, inner),
         Screen::ModelDetail => render_model_detail(frame, app, inner),
+        Screen::FineTune => render_finetune(frame, app, inner),
     }
 }
 
@@ -913,6 +914,277 @@ fn fmt_bytes(bytes: i64) -> String {
     }
 }
 
+fn render_finetune(frame: &mut Frame, app: &App, area: Rect) {
+    if app.finetune_running || app.finetune_progress.is_some() {
+        render_finetune_progress(frame, app, area);
+    } else {
+        render_finetune_form(frame, app, area);
+    }
+}
+
+fn render_finetune_form(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::vertical([
+        Constraint::Length(1), // 0  heading
+        Constraint::Length(1), // 1  spacer
+        Constraint::Length(1), // 2  status
+        Constraint::Length(1), // 3  spacer
+        Constraint::Length(1), // 4  Model Dir label
+        Constraint::Length(3), // 5  Model Dir input
+        Constraint::Length(1), // 6  spacer
+        Constraint::Length(1), // 7  Data Path label
+        Constraint::Length(3), // 8  Data Path input
+        Constraint::Length(1), // 9  spacer
+        Constraint::Length(1), // 10 Rank label
+        Constraint::Length(3), // 11 Rank input
+        Constraint::Length(1), // 12 spacer
+        Constraint::Length(1), // 13 Epochs label
+        Constraint::Length(3), // 14 Epochs input
+        Constraint::Length(1), // 15 spacer
+        Constraint::Length(1), // 16 Learning Rate label
+        Constraint::Length(3), // 17 Learning Rate input
+        Constraint::Min(0),    // 18 spacer
+        Constraint::Length(1), // 19 hint
+    ])
+    .split(area);
+
+    // Heading — show the model ID hint
+    let heading = if app.finetune_model_id.is_empty() {
+        "Fine-Tune".to_string()
+    } else {
+        format!("Fine-Tune — {}", app.finetune_model_id)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            heading,
+            Style::new().fg(C_INK).bold(),
+        ))),
+        rows[0],
+    );
+
+    render_status(frame, app, rows[2]);
+
+    // Model Dir
+    frame.render_widget(
+        Paragraph::new("Model Directory").style(Style::new().fg(C_MUTED)),
+        rows[4],
+    );
+    render_finetune_input(
+        frame,
+        &app.finetune_model_dir,
+        app.finetune_focus == FineTuneFocus::ModelDir,
+        rows[5],
+    );
+
+    // Data Path
+    frame.render_widget(
+        Paragraph::new("Training Data (JSONL)").style(Style::new().fg(C_MUTED)),
+        rows[7],
+    );
+    render_finetune_input(
+        frame,
+        &app.finetune_data_path,
+        app.finetune_focus == FineTuneFocus::DataPath,
+        rows[8],
+    );
+
+    // Rank
+    frame.render_widget(
+        Paragraph::new("LoRA Rank").style(Style::new().fg(C_MUTED)),
+        rows[10],
+    );
+    render_finetune_input(
+        frame,
+        &app.finetune_rank,
+        app.finetune_focus == FineTuneFocus::Rank,
+        rows[11],
+    );
+
+    // Epochs
+    frame.render_widget(
+        Paragraph::new("Epochs").style(Style::new().fg(C_MUTED)),
+        rows[13],
+    );
+    render_finetune_input(
+        frame,
+        &app.finetune_epochs,
+        app.finetune_focus == FineTuneFocus::Epochs,
+        rows[14],
+    );
+
+    // Learning Rate
+    frame.render_widget(
+        Paragraph::new("Learning Rate").style(Style::new().fg(C_MUTED)),
+        rows[16],
+    );
+    render_finetune_input(
+        frame,
+        &app.finetune_lr,
+        app.finetune_focus == FineTuneFocus::Lr,
+        rows[17],
+    );
+
+    frame.render_widget(
+        Paragraph::new("Enter · start   Esc · back").style(Style::new().fg(C_MUTED)),
+        rows[19],
+    );
+}
+
+fn render_finetune_input(frame: &mut Frame, value: &str, is_focused: bool, area: Rect) {
+    let border_style = if is_focused {
+        Style::new().fg(C_NEON)
+    } else {
+        Style::new().fg(C_LINE)
+    };
+
+    let block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .style(Style::new().bg(C_SURFACE_STRONG));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    frame.render_widget(Paragraph::new(value).style(Style::new().fg(C_TEXT)), inner);
+
+    if is_focused {
+        let cursor_x =
+            (inner.x + value.chars().count() as u16).min(inner.x + inner.width.saturating_sub(1));
+        frame.set_cursor_position((cursor_x, inner.y));
+    }
+}
+
+fn render_finetune_progress(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::vertical([
+        Constraint::Length(1), // 0  heading
+        Constraint::Length(1), // 1  spacer
+        Constraint::Length(1), // 2  status
+        Constraint::Length(1), // 3  spacer
+        Constraint::Length(1), // 4  progress label
+        Constraint::Length(1), // 5  progress detail
+        Constraint::Length(1), // 6  spacer
+        Constraint::Length(1), // 7  progress bar
+        Constraint::Min(0),    // 8  spacer
+        Constraint::Length(1), // 9  hint
+    ])
+    .split(area);
+
+    // Heading
+    let heading = if app.finetune_model_id.is_empty() {
+        "Fine-Tune".to_string()
+    } else {
+        format!("Fine-Tune — {}", app.finetune_model_id)
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            heading,
+            Style::new().fg(C_INK).bold(),
+        ))),
+        rows[0],
+    );
+
+    render_status(frame, app, rows[2]);
+
+    match &app.finetune_progress {
+        Some(crate::finetune::FineTuneProgress::Validating) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Validating model and data files…")
+                    .style(Style::new().fg(C_MUTED)),
+                rows[4],
+            );
+        }
+        Some(crate::finetune::FineTuneProgress::LoadingModel) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Loading model weights…").style(Style::new().fg(C_MUTED)),
+                rows[4],
+            );
+        }
+        Some(crate::finetune::FineTuneProgress::Tokenizing { done, total }) => {
+            frame.render_widget(
+                Paragraph::new(format!("⠿ Tokenizing… {done}/{total}"))
+                    .style(Style::new().fg(C_MUTED)),
+                rows[4],
+            );
+        }
+        Some(crate::finetune::FineTuneProgress::Training {
+            epoch,
+            total_epochs,
+            step,
+            total_steps,
+            loss,
+        }) => {
+            let detail =
+                format!("epoch {epoch}/{total_epochs}  step {step}/{total_steps}  loss {loss:.3}");
+            frame.render_widget(
+                Paragraph::new("Training").style(Style::new().fg(C_NEON).bold()),
+                rows[4],
+            );
+            frame.render_widget(
+                Paragraph::new(detail).style(Style::new().fg(C_TEXT)),
+                rows[5],
+            );
+
+            // Progress bar
+            let progress = if *total_steps > 0 {
+                *step as f64 / *total_steps as f64
+            } else {
+                0.0
+            };
+            let bar_width = area.width.saturating_sub(4) as usize;
+            let filled = (progress * bar_width as f64) as usize;
+            let empty = bar_width.saturating_sub(filled);
+            let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
+            frame.render_widget(Paragraph::new(bar).style(Style::new().fg(C_NEON)), rows[7]);
+        }
+        Some(crate::finetune::FineTuneProgress::Saving) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Saving adapter weights…").style(Style::new().fg(C_MUTED)),
+                rows[4],
+            );
+        }
+        Some(crate::finetune::FineTuneProgress::Done { adapter_path }) => {
+            frame.render_widget(
+                Paragraph::new("✓ Done").style(Style::new().fg(C_NEON).bold()),
+                rows[4],
+            );
+            frame.render_widget(
+                Paragraph::new(adapter_path.to_string_lossy().to_string())
+                    .style(Style::new().fg(C_NEON)),
+                rows[5],
+            );
+        }
+        Some(crate::finetune::FineTuneProgress::Failed(msg)) => {
+            frame.render_widget(
+                Paragraph::new("✗ Failed").style(Style::new().fg(C_DANGER).bold()),
+                rows[4],
+            );
+            frame.render_widget(
+                Paragraph::new(msg.as_str())
+                    .style(Style::new().fg(C_DANGER))
+                    .wrap(Wrap { trim: true }),
+                rows[5],
+            );
+        }
+        None => {
+            frame.render_widget(
+                Paragraph::new("⠿ Starting…").style(Style::new().fg(C_MUTED)),
+                rows[4],
+            );
+        }
+    }
+
+    // Hint line
+    let hint = if app.finetune_running {
+        "Ctrl+C · quit"
+    } else {
+        "Esc · back"
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::new().fg(C_MUTED)),
+        rows[9],
+    );
+}
+
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let keys: Vec<Span> = match app.screen {
         Screen::Auth => vec![
@@ -987,7 +1259,23 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
             Span::styled(" · quit", Style::new().fg(C_MUTED)),
         ],
+        Screen::FineTune if app.finetune_running => vec![
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::FineTune => vec![
+            Span::styled("Tab", Style::new().fg(C_NEON)),
+            Span::styled(" · next field    ", Style::new().fg(C_MUTED)),
+            Span::styled("Enter", Style::new().fg(C_NEON)),
+            Span::styled(" · start    ", Style::new().fg(C_MUTED)),
+            Span::styled("Esc", Style::new().fg(C_NEON)),
+            Span::styled(" · back    ", Style::new().fg(C_MUTED)),
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
         Screen::ModelDetail => vec![
+            Span::styled("f", Style::new().fg(C_NEON)),
+            Span::styled(" · fine-tune    ", Style::new().fg(C_MUTED)),
             Span::styled("Esc", Style::new().fg(C_NEON)),
             Span::styled(" · back    ", Style::new().fg(C_MUTED)),
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
