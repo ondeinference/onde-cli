@@ -1,4 +1,5 @@
 mod app;
+mod finetune;
 mod gresiq;
 mod hf;
 mod token;

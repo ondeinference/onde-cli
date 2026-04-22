@@ -41,6 +41,7 @@ pub enum Screen {
     Models,
     Downloads,
     ModelDetail,
+    FineTune,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +54,15 @@ pub enum Mode {
 pub enum Focus {
     Email,
     Password,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FineTuneFocus {
+    ModelDir,
+    DataPath,
+    Rank,
+    Epochs,
+    Lr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,6 +133,8 @@ pub enum AuthEvent {
     DownloadsLoaded(Vec<crate::hf::MergedModel>),
     #[allow(dead_code)] // reserved for future explicit error reporting
     DownloadsLoadFailed(String),
+    // fine-tune
+    FineTuneProgress(crate::finetune::FineTuneProgress),
 }
 
 pub struct App {
@@ -160,6 +172,16 @@ pub struct App {
     pub downloads_cursor: usize,
     pub downloads_offset: usize,
     pub downloads_loaded: bool,
+    // fine-tune
+    pub finetune_model_id: String,
+    pub finetune_model_dir: String,
+    pub finetune_data_path: String,
+    pub finetune_rank: String,
+    pub finetune_epochs: String,
+    pub finetune_lr: String,
+    pub finetune_focus: FineTuneFocus,
+    pub finetune_running: bool,
+    pub finetune_progress: Option<crate::finetune::FineTuneProgress>,
 }
 
 impl App {
@@ -191,6 +213,15 @@ impl App {
             downloads_cursor: 0,
             downloads_offset: 0,
             downloads_loaded: false,
+            finetune_model_id: String::new(),
+            finetune_model_dir: String::new(),
+            finetune_data_path: "~/.onde/finetune/train.jsonl".to_string(),
+            finetune_rank: "8".to_string(),
+            finetune_epochs: "3".to_string(),
+            finetune_lr: "0.0001".to_string(),
+            finetune_focus: FineTuneFocus::ModelDir,
+            finetune_running: false,
+            finetune_progress: None,
         }
     }
 
@@ -351,6 +382,16 @@ impl App {
                 self.downloads_loaded = true;
                 self.status = Status::error(msg);
             }
+            AuthEvent::FineTuneProgress(progress) => {
+                match &progress {
+                    crate::finetune::FineTuneProgress::Done { .. }
+                    | crate::finetune::FineTuneProgress::Failed(_) => {
+                        self.finetune_running = false;
+                    }
+                    _ => {}
+                }
+                self.finetune_progress = Some(progress);
+            }
         }
     }
 }
@@ -460,6 +501,7 @@ fn handle_key(
         Screen::Models => handle_key_models(app, key, tx),
         Screen::Downloads => handle_key_downloads(app, key),
         Screen::ModelDetail => handle_key_model_detail(app, key),
+        Screen::FineTune => handle_key_finetune(app, key, tx),
     }
 }
 
@@ -753,6 +795,184 @@ fn handle_key_model_detail(app: &mut App, key: crossterm::event::KeyEvent) {
         (Char('c'), KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
+        (Char('f'), KeyModifiers::NONE) => {
+            if let Some(model) = app.downloads.get(app.downloads_cursor) {
+                app.finetune_model_id = model.model_id.clone();
+                app.finetune_model_dir = resolve_hf_cache_path(&model.model_id);
+                app.finetune_focus = FineTuneFocus::DataPath;
+                app.finetune_running = false;
+                app.finetune_progress = None;
+                app.screen = Screen::FineTune;
+                app.status = Status::neutral("Configure fine-tuning.");
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Resolve a HuggingFace model ID to its local cache snapshot directory.
+///
+/// Priority: App Group (onde-cli download cache) → `$HF_HOME` → `~/.cache/huggingface/hub`.
+/// Looks for `{hub}/models--{org}--{name}/snapshots/{hash}/` and returns the first match,
+/// or an empty string if not found.
+fn resolve_hf_cache_path(model_id: &str) -> String {
+    let dir_name = format!("models--{}", model_id.replace('/', "--"));
+
+    // App Group first (that's where onde-cli downloads), then standard HF cache
+    let candidates: Vec<std::path::PathBuf> = {
+        let mut c = Vec::new();
+        #[cfg(target_os = "macos")]
+        if let Some(home) = dirs::home_dir() {
+            c.push(
+                home.join("Library")
+                    .join("Group Containers")
+                    .join("group.com.ondeinference.apps")
+                    .join("models")
+                    .join("hub"),
+            );
+        }
+        // Check HF_HOME env
+        if let Ok(hf_home) = std::env::var("HF_HOME") {
+            c.push(std::path::PathBuf::from(hf_home).join("hub"));
+        }
+        // ~/.cache/huggingface/hub
+        if let Some(home) = dirs::home_dir() {
+            c.push(home.join(".cache").join("huggingface").join("hub"));
+        }
+        c
+    };
+
+    for hub in candidates {
+        let snapshots_dir = hub.join(&dir_name).join("snapshots");
+        if let Ok(entries) = std::fs::read_dir(&snapshots_dir) {
+            // Pick the first (usually only) snapshot hash directory
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    return p.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+
+    String::new()
+}
+
+fn handle_key_finetune(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    if app.finetune_running {
+        if matches!(
+            (key.code, key.modifiers),
+            (Char('c'), KeyModifiers::CONTROL)
+        ) {
+            app.should_quit = true;
+        }
+        return;
+    }
+
+    match (key.code, key.modifiers) {
+        (Tab, _) => {
+            app.finetune_focus = match app.finetune_focus {
+                FineTuneFocus::ModelDir => FineTuneFocus::DataPath,
+                FineTuneFocus::DataPath => FineTuneFocus::Rank,
+                FineTuneFocus::Rank => FineTuneFocus::Epochs,
+                FineTuneFocus::Epochs => FineTuneFocus::Lr,
+                FineTuneFocus::Lr => FineTuneFocus::ModelDir,
+            };
+        }
+        (Backspace, _) => match app.finetune_focus {
+            FineTuneFocus::ModelDir => {
+                app.finetune_model_dir.pop();
+            }
+            FineTuneFocus::DataPath => {
+                app.finetune_data_path.pop();
+            }
+            FineTuneFocus::Rank => {
+                app.finetune_rank.pop();
+            }
+            FineTuneFocus::Epochs => {
+                app.finetune_epochs.pop();
+            }
+            FineTuneFocus::Lr => {
+                app.finetune_lr.pop();
+            }
+        },
+        (Enter, _) => {
+            let rank: usize = app.finetune_rank.parse().unwrap_or(8);
+            let epochs: usize = app.finetune_epochs.parse().unwrap_or(3);
+            let lr: f64 = app.finetune_lr.parse().unwrap_or(0.0001);
+
+            // Expand ~ in paths
+            let expand = |s: &str| -> String {
+                if let Some(rest) = s.strip_prefix("~/") {
+                    if let Some(home) = dirs::home_dir() {
+                        return home.join(rest).to_string_lossy().to_string();
+                    }
+                }
+                s.to_string()
+            };
+
+            let model_dir = std::path::PathBuf::from(expand(&app.finetune_model_dir));
+            let data_path = std::path::PathBuf::from(expand(&app.finetune_data_path));
+            let output_dir = model_dir
+                .parent()
+                .unwrap_or(&model_dir)
+                .join("lora-adapter");
+
+            let config = crate::finetune::FineTuneConfig {
+                model_dir,
+                data_path,
+                output_dir,
+                lora_rank: rank,
+                lora_alpha: (rank as f32) * 2.0,
+                learning_rate: lr,
+                epochs,
+                max_seq_len: 512,
+            };
+
+            app.finetune_running = true;
+            app.finetune_progress = None;
+            app.status = Status::neutral("Fine-tuning started…");
+
+            let (ft_tx, mut ft_rx) = mpsc::unbounded_channel();
+            crate::finetune::start_finetune(config, ft_tx);
+
+            let auth_tx = tx.clone();
+            tokio::spawn(async move {
+                while let Some(progress) = ft_rx.recv().await {
+                    let _ = auth_tx.send(AuthEvent::FineTuneProgress(progress));
+                }
+            });
+        }
+        (Esc, _) => {
+            app.screen = Screen::ModelDetail;
+            app.status = Status::neutral("Back to model.");
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => match app.finetune_focus {
+            FineTuneFocus::ModelDir => {
+                app.finetune_model_dir.push(c);
+            }
+            FineTuneFocus::DataPath => {
+                app.finetune_data_path.push(c);
+            }
+            FineTuneFocus::Rank => {
+                app.finetune_rank.push(c);
+            }
+            FineTuneFocus::Epochs => {
+                app.finetune_epochs.push(c);
+            }
+            FineTuneFocus::Lr => {
+                app.finetune_lr.push(c);
+            }
+        },
         _ => {}
     }
 }
