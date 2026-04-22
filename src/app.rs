@@ -17,8 +17,14 @@ use {
 pub use smbcloud_gresiq_sdk::{OndeApp, OndeModel};
 
 // Onde is a tenant in smbCloud Auth. These identify this CLI to the backend.
-pub(crate) const ONDE_APP_ID: &str = "e1098adf-9859-43bf-ae98-514cf66252a5";
-pub(crate) const ONDE_APP_SECRET: &str = "5bc60b32-c072-40ce-a91f-b289fdee075d";
+// smbCloud Auth credentials — baked in at compile time from the environment.
+// Set these in .env for local builds; inject as secrets in CI.
+pub(crate) const ONDE_APP_ID: &str = env!("ONDE_APP_ID");
+pub(crate) const ONDE_APP_SECRET: &str = env!("ONDE_APP_SECRET");
+
+// GresIQ API credentials for the Onde tenant — distinct from Auth above.
+pub(crate) const GRESIQ_API_KEY: &str = env!("GRESIQ_API_KEY");
+pub(crate) const GRESIQ_API_SECRET: &str = env!("GRESIQ_API_SECRET");
 
 fn credentials() -> ClientCredentials<'static> {
     ClientCredentials {
@@ -31,6 +37,7 @@ fn credentials() -> ClientCredentials<'static> {
 pub enum Screen {
     Auth,
     Apps,
+    AppDetail,
     Models,
 }
 
@@ -61,13 +68,22 @@ pub struct Status {
 
 impl Status {
     pub fn neutral(msg: impl Into<String>) -> Self {
-        Self { tone: StatusTone::Neutral, message: msg.into() }
+        Self {
+            tone: StatusTone::Neutral,
+            message: msg.into(),
+        }
     }
     pub fn success(msg: impl Into<String>) -> Self {
-        Self { tone: StatusTone::Success, message: msg.into() }
+        Self {
+            tone: StatusTone::Success,
+            message: msg.into(),
+        }
     }
     pub fn error(msg: impl Into<String>) -> Self {
-        Self { tone: StatusTone::Error, message: msg.into() }
+        Self {
+            tone: StatusTone::Error,
+            message: msg.into(),
+        }
     }
 }
 
@@ -88,6 +104,8 @@ pub enum AuthEvent {
     AppsLoadFailed(String),
     AppCreated(OndeApp),
     AppCreateFailed(String),
+    AppRenamedOk { app_index: usize, new_name: String },
+    AppRenameFailed(String),
     // models
     ModelsLoaded(Vec<OndeModel>),
     ModelsLoadFailed(String),
@@ -120,6 +138,9 @@ pub struct App {
     // inline create form
     pub creating_app: bool,
     pub new_app_name: String,
+    // rename form (used on AppDetail screen)
+    pub renaming_app: bool,
+    pub rename_input: String,
     // which app we're picking a model for
     pub assigning_for_app_index: Option<usize>,
 }
@@ -146,6 +167,8 @@ impl App {
             models_loaded: false,
             creating_app: false,
             new_app_name: String::new(),
+            renaming_app: false,
+            rename_input: String::new(),
             assigning_for_app_index: None,
         }
     }
@@ -200,6 +223,8 @@ impl App {
                 self.models_offset = 0;
                 self.creating_app = false;
                 self.new_app_name.clear();
+                self.renaming_app = false;
+                self.rename_input.clear();
                 self.assigning_for_app_index = None;
                 self.status = Status::neutral("Signed out.");
             }
@@ -228,6 +253,22 @@ impl App {
                 self.busy = false;
                 self.status = Status::error(msg);
             }
+            AuthEvent::AppRenamedOk {
+                app_index,
+                new_name,
+            } => {
+                self.busy = false;
+                self.renaming_app = false;
+                self.rename_input.clear();
+                if let Some(onde_app) = self.apps.get_mut(app_index) {
+                    onde_app.name = new_name;
+                }
+                self.status = Status::success("App renamed.");
+            }
+            AuthEvent::AppRenameFailed(msg) => {
+                self.busy = false;
+                self.status = Status::error(msg);
+            }
             // models
             AuthEvent::ModelsLoaded(models) => {
                 self.busy = false;
@@ -239,12 +280,25 @@ impl App {
                 self.busy = false;
                 self.status = Status::error(msg);
             }
-            AuthEvent::ModelAssigned { app_index, model_id } => {
+            AuthEvent::ModelAssigned {
+                app_index,
+                model_id,
+            } => {
                 self.busy = false;
-                self.screen = Screen::Apps;
+                self.screen = Screen::AppDetail;
                 self.assigning_for_app_index = None;
                 if let Some(onde_app) = self.apps.get_mut(app_index) {
+                    // Resolve the display name from the loaded models list so
+                    // the apps list and detail view update immediately without
+                    // a round-trip. Falls back to the raw ID if not found.
+                    let resolved_name = self
+                        .models
+                        .iter()
+                        .find(|m| m.id == model_id)
+                        .and_then(|m| m.name.clone())
+                        .unwrap_or_else(|| model_id.clone());
                     onde_app.current_model_id = Some(model_id);
+                    onde_app.active_model = Some(resolved_name);
                 }
                 self.status = Status::success("Model assigned.");
             }
@@ -273,9 +327,7 @@ pub async fn run(terminal: &mut DefaultTerminal) -> Result<()> {
                 }
                 Err(_) => {
                     token::clear();
-                    let _ = tx2.send(AuthEvent::Failed(
-                        "Session expired. Sign in again.".into(),
-                    ));
+                    let _ = tx2.send(AuthEvent::Failed("Session expired. Sign in again.".into()));
                 }
             }
         });
@@ -347,7 +399,10 @@ fn handle_key(
 
     // while a request is in flight only Ctrl+C is allowed
     if app.busy {
-        if matches!((key.code, key.modifiers), (Char('c'), KeyModifiers::CONTROL)) {
+        if matches!(
+            (key.code, key.modifiers),
+            (Char('c'), KeyModifiers::CONTROL)
+        ) {
             app.should_quit = true;
         }
         return;
@@ -356,6 +411,7 @@ fn handle_key(
     match app.screen {
         Screen::Auth => handle_key_auth(app, key, tx),
         Screen::Apps => handle_key_apps(app, key, tx),
+        Screen::AppDetail => handle_key_app_detail(app, key, tx),
         Screen::Models => handle_key_models(app, key, tx),
     }
 }
@@ -387,8 +443,12 @@ fn handle_key_auth(
             submit(app, tx);
         }
         (Backspace, _) => match app.focus {
-            Focus::Email => { app.email.pop(); }
-            Focus::Password => { app.password.pop(); }
+            Focus::Email => {
+                app.email.pop();
+            }
+            Focus::Password => {
+                app.password.pop();
+            }
         },
         (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => match app.focus {
             Focus::Email => app.email.push(c),
@@ -439,7 +499,19 @@ fn handle_key_apps(
                 clamp_apps_scroll(app, MAX_VISIBLE);
             }
             (Enter, _) => {
-                open_model_picker(app, tx);
+                if !app.apps.is_empty() {
+                    app.screen = Screen::AppDetail;
+                    app.renaming_app = false;
+                    app.rename_input.clear();
+                    let app_name = app
+                        .apps
+                        .get(app.apps_cursor)
+                        .map(|a| a.name.as_str())
+                        .unwrap_or("app");
+                    app.status = Status::neutral(format!(
+                        "{app_name} — m · model   r · rename   Esc · back"
+                    ));
+                }
             }
             (Char('n'), KeyModifiers::NONE) => {
                 app.creating_app = true;
@@ -454,6 +526,93 @@ fn handle_key_apps(
             _ => {}
         }
     }
+}
+
+fn handle_key_app_detail(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    if app.renaming_app {
+        match (key.code, key.modifiers) {
+            (Esc, _) => {
+                app.renaming_app = false;
+                app.rename_input.clear();
+                app.status = Status::neutral("Rename cancelled.");
+            }
+            (Enter, _) => {
+                submit_rename_app(app, tx);
+            }
+            (Backspace, _) => {
+                app.rename_input.pop();
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                app.rename_input.push(c);
+            }
+            _ => {}
+        }
+    } else {
+        match (key.code, key.modifiers) {
+            (Esc, _) => {
+                app.screen = Screen::Apps;
+                app.status = Status::neutral("Back to apps.");
+            }
+            (Char('m'), KeyModifiers::NONE) => {
+                open_model_picker(app, tx);
+            }
+            (Char('r'), KeyModifiers::NONE) => {
+                let current_name = app
+                    .apps
+                    .get(app.apps_cursor)
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default();
+                app.rename_input = current_name;
+                app.renaming_app = true;
+                app.status = Status::neutral("Edit the name and press Enter.");
+            }
+            (Char('s'), KeyModifiers::NONE) => {
+                sign_out(app, tx);
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn submit_rename_app(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    let name = app.rename_input.trim().to_string();
+    if name.is_empty() {
+        app.status = Status::error("Name cannot be empty.");
+        return;
+    }
+    let Some(onde_app) = app.apps.get(app.apps_cursor) else {
+        return;
+    };
+    let token = token::load().unwrap_or_default();
+    let onde_app_id = onde_app.id.clone();
+    let app_index = app.apps_cursor;
+    app.busy = true;
+    app.status = Status::neutral(format!("Renaming to \"{name}\"\u{2026}"));
+    tokio::spawn(async move {
+        match crate::gresiq::rename_app(&token, &onde_app_id, &name).await {
+            Ok(_) => {
+                let _ = tx.send(AuthEvent::AppRenamedOk {
+                    app_index,
+                    new_name: name,
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(AuthEvent::AppRenameFailed(e.to_string()));
+            }
+        }
+    });
 }
 
 fn handle_key_models(
@@ -478,9 +637,9 @@ fn handle_key_models(
             submit_assign_model(app, tx);
         }
         (Esc, _) => {
-            app.screen = Screen::Apps;
+            app.screen = Screen::AppDetail;
             app.assigning_for_app_index = None;
-            app.status = Status::neutral("Back to apps.");
+            app.status = Status::neutral("Back to app.");
         }
         (Char('c'), KeyModifiers::CONTROL) => {
             app.should_quit = true;
@@ -574,7 +733,10 @@ fn submit_assign_model(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
     tokio::spawn(async move {
         match crate::gresiq::assign_model(&token, &onde_app_id, &model_id).await {
             Ok(()) => {
-                let _ = tx.send(AuthEvent::ModelAssigned { app_index, model_id });
+                let _ = tx.send(AuthEvent::ModelAssigned {
+                    app_index,
+                    model_id,
+                });
             }
             Err(e) => {
                 let _ = tx.send(AuthEvent::ModelAssignFailed(e.to_string()));
@@ -603,13 +765,8 @@ fn submit(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
     tokio::spawn(async move {
         let event = match mode {
             Mode::Signup => {
-                match signup_with_client(
-                    Environment::Production,
-                    credentials(),
-                    email,
-                    password,
-                )
-                .await
+                match signup_with_client(Environment::Production, credentials(), email, password)
+                    .await
                 {
                     Ok(result) => AuthEvent::SignupOk(result.message),
                     Err(e) => AuthEvent::Failed(extract_error(&e)),
@@ -638,7 +795,9 @@ fn submit(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
                             Ok(user) => user.email,
                             Err(_) => email,
                         };
-                        AuthEvent::SigninOk(Profile { email: profile_email })
+                        AuthEvent::SigninOk(Profile {
+                            email: profile_email,
+                        })
                     }
                     Ok(AccountStatus::Incomplete { .. }) => AuthEvent::Failed(
                         "Check your email first — we sent a confirmation link when you signed up."
