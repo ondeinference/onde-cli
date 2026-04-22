@@ -941,13 +941,22 @@ fn handle_key_model_detail(app: &mut App, key: crossterm::event::KeyEvent) {
         }
         (Char('f'), KeyModifiers::NONE) => {
             if let Some(model) = app.downloads.get(app.downloads_cursor) {
-                app.finetune_model_id = model.model_id.clone();
-                app.finetune_model_dir = resolve_hf_cache_path(&model.model_id);
-                app.finetune_focus = FineTuneFocus::DataPath;
-                app.finetune_running = false;
-                app.finetune_progress = None;
-                app.screen = Screen::FineTune;
-                app.status = Status::neutral("Configure fine-tuning.");
+                let resolved = resolve_hf_cache_path(&model.model_id);
+                if resolved.is_empty() {
+                    app.status = Status::error("Model not downloaded locally.");
+                } else if !std::path::Path::new(&resolved).join("config.json").exists() {
+                    app.status = Status::error(
+                        "Fine-tuning requires a safetensors model (GGUF not supported).",
+                    );
+                } else {
+                    app.finetune_model_id = model.model_id.clone();
+                    app.finetune_model_dir = resolved;
+                    app.finetune_focus = FineTuneFocus::DataPath;
+                    app.finetune_running = false;
+                    app.finetune_progress = None;
+                    app.screen = Screen::FineTune;
+                    app.status = Status::neutral("Configure fine-tuning.");
+                }
             }
         }
         _ => {}
@@ -989,11 +998,16 @@ fn resolve_hf_cache_path(model_id: &str) -> String {
     for hub in candidates {
         let snapshots_dir = hub.join(&dir_name).join("snapshots");
         if let Ok(entries) = std::fs::read_dir(&snapshots_dir) {
-            // Pick the first (usually only) snapshot hash directory
+            // Pick the first directory that looks like a commit hash (hex string).
+            // This skips non-hash dirs like "lora-adapter" that fine-tuning creates.
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.is_dir() {
-                    return p.to_string_lossy().to_string();
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.len() >= 7 && name.chars().all(|c| c.is_ascii_hexdigit()) {
+                        return p.to_string_lossy().to_string();
+                    }
                 }
             }
         }
