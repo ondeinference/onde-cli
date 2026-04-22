@@ -11,6 +11,8 @@
 <p align="center">
   <a href="https://ondeinference.com"><img src="https://img.shields.io/badge/ondeinference.com-235843?style=flat-square&labelColor=17211D" alt="Website"></a>
   <a href="https://apps.apple.com/se/developer/splitfire-ab/id1831430993"><img src="https://img.shields.io/badge/App%20Store-live-235843?style=flat-square&labelColor=17211D" alt="App Store"></a>
+  <a href="https://pypi.org/project/onde-cli/"><img src="https://img.shields.io/pypi/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="PyPI"></a>
+  <a href="https://crates.io/crates/onde-cli"><img src="https://img.shields.io/crates/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="Crates.io"></a>
 </p>
 
 <p align="center">
@@ -21,15 +23,56 @@
 
 Manage your Onde Inference account from the terminal. Sign up, sign in, and access the service.
 
-More commands are coming.
-
 ## Install
+
+### Homebrew (macOS)
+
+```sh
+brew tap ondeinference/homebrew-tap
+brew install onde
+```
+
+### pip
+
+```sh
+pip install onde-cli
+```
+
+### uv
+
+```sh
+uv tool install onde-cli
+```
+
+### Pre-built binary (macOS, Linux, Windows)
+
+Download the latest binary for your platform from the
+[GitHub Releases](https://github.com/ondeinference/onde-cli/releases) page,
+make it executable, and move it onto your `PATH`:
+
+```sh
+# macOS arm64 example
+curl -Lo onde https://github.com/ondeinference/onde-cli/releases/latest/download/onde-macos-arm64
+chmod +x onde
+mv onde /usr/local/bin/onde
+```
+
+| Platform | File |
+|---|---|
+| macOS Apple silicon | `onde-macos-arm64` |
+| macOS Intel | `onde-macos-amd64` |
+| Linux x64 | `onde-linux-amd64` |
+| Linux arm64 | `onde-linux-arm64` |
+| Windows x64 | `onde-win-amd64.exe` |
+| Windows arm64 | `onde-win-arm64.exe` |
+
+### cargo
 
 ```sh
 cargo install onde-cli
 ```
 
-Or build locally:
+### Build from source
 
 ```sh
 git clone https://github.com/ondeinference/onde-cli
@@ -37,6 +80,8 @@ cd onde-cli
 cargo build --release
 ./target/release/onde
 ```
+
+---
 
 ## Usage
 
