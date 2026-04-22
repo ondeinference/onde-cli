@@ -291,15 +291,19 @@ fn run_finetune(
 // ---------------------------------------------------------------------------
 
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 struct ModelConfig {
     hidden_size: usize,
     num_hidden_layers: usize,
     num_attention_heads: usize,
     num_key_value_heads: Option<usize>,
+    head_dim: Option<usize>,
     intermediate_size: usize,
     vocab_size: usize,
     rms_norm_eps: Option<f64>,
     rope_theta: Option<f64>,
+    #[serde(default)]
+    tie_word_embeddings: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -483,6 +487,9 @@ struct TransformerLayer {
     k_proj: FrozenLinear, // frozen
     v_proj: LoraLinear,   // LoRA applied
     o_proj: FrozenLinear, // frozen
+    // QK-norm (Qwen3 only — None for Qwen2/2.5)
+    q_norm: Option<Tensor>, // [head_dim]
+    k_norm: Option<Tensor>, // [head_dim]
     // MLP projections (SwiGLU)
     gate_proj: FrozenLinear,
     up_proj: FrozenLinear,
@@ -525,6 +532,18 @@ impl TransformerLayer {
         let v = v
             .reshape((b, seq, self.num_kv_heads, self.head_dim))?
             .transpose(1, 2)?;
+
+        // Qwen3 QK-Norm: apply per-head RMSNorm to Q and K before RoPE.
+        let q = if let Some(w) = &self.q_norm {
+            rms_norm(&q, w, self.rms_norm_eps)?
+        } else {
+            q
+        };
+        let k = if let Some(w) = &self.k_norm {
+            rms_norm(&k, w, self.rms_norm_eps)?
+        } else {
+            k
+        };
 
         // Apply RoPE (requires contiguous storage for the custom kernel)
         let q = apply_rope(&q.contiguous()?, cos, sin)?;
@@ -628,7 +647,7 @@ impl LoraQwenModel {
         let vocab_size = cfg.vocab_size;
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads.unwrap_or(num_heads);
-        let head_dim = hidden_size / num_heads;
+        let head_dim = cfg.head_dim.unwrap_or(hidden_size / num_heads);
         let intermediate_size = cfg.intermediate_size;
         let rms_norm_eps = cfg.rms_norm_eps.unwrap_or(1e-6);
         let rope_theta = cfg.rope_theta.unwrap_or(10_000.0);
@@ -681,6 +700,10 @@ impl LoraQwenModel {
                 bias: None,
             };
 
+            // --- QK-Norm (Qwen3 only) ---
+            let q_norm = vb_attn.pp("q_norm").get((head_dim,), "weight").ok();
+            let k_norm = vb_attn.pp("k_norm").get((head_dim,), "weight").ok();
+
             // --- MLP projections (all frozen) ---
             let vb_mlp = vb_layer.pp("mlp");
 
@@ -707,6 +730,8 @@ impl LoraQwenModel {
                 k_proj,
                 v_proj,
                 o_proj,
+                q_norm,
+                k_norm,
                 gate_proj: FrozenLinear {
                     weight: gate_weight,
                     bias: None,
@@ -730,7 +755,10 @@ impl LoraQwenModel {
 
         // Final RMSNorm and language model head
         let norm = vb.pp("model").pp("norm").get((hidden_size,), "weight")?;
-        let lm_head = vb.pp("lm_head").get((vocab_size, hidden_size), "weight")?;
+        let lm_head = vb
+            .pp("lm_head")
+            .get((vocab_size, hidden_size), "weight")
+            .unwrap_or_else(|_| embed_tokens.clone());
 
         // Precompute RoPE tables
         let (rope_cos, rope_sin) = precompute_rope(head_dim, max_seq_len, rope_theta, device)?;
