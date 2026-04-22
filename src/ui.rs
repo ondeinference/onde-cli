@@ -1,5 +1,6 @@
 use {
     crate::app::{App, Focus, Mode, OndeApp, Screen, StatusTone},
+    crate::hf::CacheSource,
     ratatui::{
         Frame,
         layout::{Alignment, Constraint, Layout, Rect},
@@ -81,6 +82,8 @@ fn render_card(frame: &mut Frame, app: &App, area: Rect) {
         Screen::Apps => render_apps(frame, app, inner),
         Screen::AppDetail => render_app_detail(frame, app, inner),
         Screen::Models => render_models(frame, app, inner),
+        Screen::Downloads => render_downloads(frame, app, inner),
+        Screen::ModelDetail => render_model_detail(frame, app, inner),
     }
 }
 
@@ -281,11 +284,41 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
 
 // apps screen
 
+/// Tab bar shared between the Apps and Downloads screens.
+fn render_nav_tabs(frame: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::horizontal([
+        Constraint::Length(9),  // [ Apps ]
+        Constraint::Length(1),  // gap
+        Constraint::Length(11), // [ Models ]
+        Constraint::Min(0),
+    ])
+    .split(area);
+
+    let active = Style::new().fg(C_SURFACE).bg(C_NEON).bold();
+    let inactive = Style::new().fg(C_MUTED).bg(C_SURFACE_STRONG);
+
+    let apps_style = if app.screen == Screen::Apps {
+        active
+    } else {
+        inactive
+    };
+    let models_style = if app.screen == Screen::Downloads {
+        active
+    } else {
+        inactive
+    };
+
+    frame.render_widget(Paragraph::new(" Apps ").style(apps_style), cols[0]);
+    frame.render_widget(Paragraph::new(" Models ").style(models_style), cols[2]);
+}
+
 fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
     let email = app.profile.as_ref().map(|p| p.email.as_str()).unwrap_or("");
 
     let top = Layout::vertical([
         Constraint::Length(1), // profile badge
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // nav tabs
         Constraint::Length(1), // spacer
         Constraint::Length(1), // status
         Constraint::Length(1), // spacer
@@ -303,20 +336,21 @@ fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
         top[0],
     );
 
-    render_status(frame, app, top[2]);
+    render_nav_tabs(frame, app, top[2]);
+    render_status(frame, app, top[4]);
 
     frame.render_widget(
         Paragraph::new("  Name                   Status   Model").style(Style::new().fg(C_MUTED)),
-        top[4],
+        top[6],
     );
 
     let divider = "─".repeat(area.width as usize);
     frame.render_widget(
         Paragraph::new(divider).style(Style::new().fg(C_LINE)),
-        top[5],
+        top[7],
     );
 
-    let rest = top[6];
+    let rest = top[8];
     if app.creating_app {
         let bottom = Layout::vertical([
             Constraint::Min(0),    // list
@@ -633,6 +667,242 @@ fn render_models(frame: &mut Frame, app: &App, area: Rect) {
     render_status(frame, app, rows[6]);
 }
 
+// downloads screen
+
+fn render_downloads(frame: &mut Frame, app: &App, area: Rect) {
+    let email = app.profile.as_ref().map(|p| p.email.as_str()).unwrap_or("");
+
+    let top = Layout::vertical([
+        Constraint::Length(1), // profile badge
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // nav tabs
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // status
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // column header
+        Constraint::Length(1), // divider
+        Constraint::Min(0),    // list + hint
+    ])
+    .split(area);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("✓ ", Style::new().fg(C_NEON)),
+            Span::styled(email, Style::new().fg(C_TEXT).bold()),
+        ])),
+        top[0],
+    );
+
+    render_nav_tabs(frame, app, top[2]);
+    render_status(frame, app, top[4]);
+
+    frame.render_widget(
+        Paragraph::new("  Model                                   Size       Source")
+            .style(Style::new().fg(C_MUTED)),
+        top[6],
+    );
+
+    let divider = "─".repeat(area.width as usize);
+    frame.render_widget(
+        Paragraph::new(divider).style(Style::new().fg(C_LINE)),
+        top[7],
+    );
+
+    let bottom = Layout::vertical([
+        Constraint::Min(0),    // list
+        Constraint::Length(1), // hint
+    ])
+    .split(top[8]);
+
+    render_downloads_list(frame, app, bottom[0]);
+
+    frame.render_widget(
+        Paragraph::new("↑↓ · navigate   Tab · apps").style(Style::new().fg(C_MUTED)),
+        bottom[1],
+    );
+}
+
+fn render_downloads_list(frame: &mut Frame, app: &App, area: Rect) {
+    if app.downloads.is_empty() {
+        if app.busy {
+            frame.render_widget(
+                Paragraph::new("  Scanning…").style(Style::new().fg(C_MUTED)),
+                area,
+            );
+        } else if app.downloads_loaded {
+            frame.render_widget(
+                Paragraph::new("  No models in catalog yet.").style(Style::new().fg(C_MUTED)),
+                area,
+            );
+        }
+        return;
+    }
+
+    let max_rows = area.height as usize;
+    for (list_idx, model) in app
+        .downloads
+        .iter()
+        .enumerate()
+        .skip(app.downloads_offset)
+        .take(max_rows)
+    {
+        let row_y = area.y + (list_idx - app.downloads_offset) as u16;
+        let row_area = Rect::new(area.x, row_y, area.width, 1);
+
+        let is_selected = list_idx == app.downloads_cursor;
+        let prefix = if is_selected { "▶ " } else { "  " };
+
+        let (status_label, status_style) = if model.downloaded {
+            let src = model
+                .source
+                .as_ref()
+                .map(|s| s.label())
+                .unwrap_or("Downloaded");
+            let style = match model.source.as_ref() {
+                Some(CacheSource::AppGroup) => Style::new().fg(C_NEON),
+                _ => Style::new().fg(C_TEXT),
+            };
+            (src, style)
+        } else {
+            ("–", Style::new().fg(C_MUTED))
+        };
+
+        let left = format!(
+            "{}{:<36} {:<10}",
+            prefix, model.display_name, model.size_display
+        );
+
+        let text_style = if is_selected {
+            Style::new().fg(C_NEON)
+        } else if model.downloaded {
+            Style::new().fg(C_TEXT)
+        } else {
+            Style::new().fg(C_MUTED)
+        };
+
+        let line = Line::from(vec![
+            Span::styled(left, text_style),
+            Span::styled(status_label, status_style),
+        ]);
+
+        frame.render_widget(Paragraph::new(line), row_area);
+    }
+}
+
+// model detail screen
+
+fn render_model_detail(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(model) = app.downloads.get(app.downloads_cursor) else {
+        return;
+    };
+
+    // Resolve fields from the catalog entry when available.
+    let hf_repo = model.model_id.as_str();
+    let format_str = model
+        .catalog_model
+        .as_ref()
+        .and_then(|m| m.format.as_deref())
+        .unwrap_or("–");
+    let gguf_file = model
+        .catalog_model
+        .as_ref()
+        .and_then(|m| m.gguf_file.as_deref())
+        .unwrap_or("–");
+    let description = model
+        .catalog_model
+        .as_ref()
+        .and_then(|m| m.description.as_deref())
+        .unwrap_or("–");
+    let family = model
+        .catalog_model
+        .as_ref()
+        .and_then(|m| m.family.as_deref())
+        .unwrap_or("–");
+
+    let (dl_label, dl_style) = if model.downloaded {
+        let src = model.source.as_ref().map(|s| s.label()).unwrap_or("Yes");
+        (format!("✓  {src}"), Style::new().fg(C_NEON).bold())
+    } else {
+        ("–  Not downloaded".to_string(), Style::new().fg(C_MUTED))
+    };
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // 0  model name heading
+        Constraint::Length(1), // 1  spacer
+        Constraint::Length(1), // 2  status
+        Constraint::Length(1), // 3  spacer
+        Constraint::Length(1), // 4  HF Repo label
+        Constraint::Length(1), // 5  HF Repo value
+        Constraint::Length(1), // 6  spacer
+        Constraint::Length(1), // 7  Downloaded label
+        Constraint::Length(1), // 8  Downloaded value
+        Constraint::Length(1), // 9  spacer
+        Constraint::Length(1), // 10 Size label
+        Constraint::Length(1), // 11 Size value
+        Constraint::Length(1), // 12 spacer
+        Constraint::Length(1), // 13 Format label
+        Constraint::Length(1), // 14 Format value
+        Constraint::Length(1), // 15 spacer
+        Constraint::Length(1), // 16 Family label
+        Constraint::Length(1), // 17 Family value
+        Constraint::Length(1), // 18 spacer
+        Constraint::Length(1), // 19 File label
+        Constraint::Length(1), // 20 File value
+        Constraint::Length(1), // 21 spacer
+        Constraint::Length(1), // 22 Catalog ID label
+        Constraint::Length(1), // 23 Catalog ID value
+        Constraint::Length(1), // 24 spacer
+        Constraint::Length(1), // 25 Description label
+        Constraint::Min(0),    // 26 Description value (wraps)
+        Constraint::Length(1), // 27 hint
+    ])
+    .split(area);
+
+    // Heading
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            &model.display_name,
+            Style::new().fg(C_INK).bold(),
+        ))),
+        rows[0],
+    );
+
+    render_status(frame, app, rows[2]);
+
+    render_detail_field(frame, "HF Repo", hf_repo, rows[4], rows[5]);
+
+    // Downloaded — styled separately
+    frame.render_widget(
+        Paragraph::new("Downloaded").style(Style::new().fg(C_MUTED)),
+        rows[7],
+    );
+    frame.render_widget(Paragraph::new(dl_label).style(dl_style), rows[8]);
+
+    render_detail_field(frame, "Size", &model.size_display, rows[10], rows[11]);
+    render_detail_field(frame, "Format", format_str, rows[13], rows[14]);
+    render_detail_field(frame, "Family", family, rows[16], rows[17]);
+    render_detail_field(frame, "File", gguf_file, rows[19], rows[20]);
+
+    let catalog_id_str = model.catalog_id.as_deref().unwrap_or("–");
+    render_detail_field(frame, "Catalog ID", catalog_id_str, rows[22], rows[23]);
+
+    frame.render_widget(
+        Paragraph::new("Description").style(Style::new().fg(C_MUTED)),
+        rows[25],
+    );
+    frame.render_widget(
+        Paragraph::new(description)
+            .style(Style::new().fg(C_TEXT))
+            .wrap(Wrap { trim: true }),
+        rows[26],
+    );
+
+    frame.render_widget(
+        Paragraph::new("Esc · back to models").style(Style::new().fg(C_MUTED)),
+        rows[27],
+    );
+}
+
 fn fmt_bytes(bytes: i64) -> String {
     if bytes >= 1_000_000_000 {
         format!("{:.1}GB", bytes as f64 / 1e9)
@@ -672,6 +942,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" · open    ", Style::new().fg(C_MUTED)),
             Span::styled("n", Style::new().fg(C_NEON)),
             Span::styled(" · new    ", Style::new().fg(C_MUTED)),
+            Span::styled("Tab", Style::new().fg(C_NEON)),
+            Span::styled(" · models    ", Style::new().fg(C_MUTED)),
             Span::styled("s", Style::new().fg(C_NEON)),
             Span::styled(" · sign out    ", Style::new().fg(C_MUTED)),
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
@@ -700,6 +972,22 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" · navigate    ", Style::new().fg(C_MUTED)),
             Span::styled("Enter", Style::new().fg(C_NEON)),
             Span::styled(" · assign    ", Style::new().fg(C_MUTED)),
+            Span::styled("Esc", Style::new().fg(C_NEON)),
+            Span::styled(" · back    ", Style::new().fg(C_MUTED)),
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::Downloads => vec![
+            Span::styled("↑↓", Style::new().fg(C_NEON)),
+            Span::styled(" · navigate    ", Style::new().fg(C_MUTED)),
+            Span::styled("Enter", Style::new().fg(C_NEON)),
+            Span::styled(" · detail    ", Style::new().fg(C_MUTED)),
+            Span::styled("Tab", Style::new().fg(C_NEON)),
+            Span::styled(" · apps    ", Style::new().fg(C_MUTED)),
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::ModelDetail => vec![
             Span::styled("Esc", Style::new().fg(C_NEON)),
             Span::styled(" · back    ", Style::new().fg(C_MUTED)),
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
