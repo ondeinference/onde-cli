@@ -1,8 +1,10 @@
 mod app;
 mod finetune;
+mod gguf;
 mod gresiq;
 mod hf;
 mod hf_search;
+mod merge;
 mod token;
 mod ui;
 
