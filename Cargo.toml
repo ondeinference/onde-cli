@@ -16,6 +16,9 @@ authors = ["Seto Elkahfi <hej@setoelkahfi.se>"]
 name = "onde"
 path = "src/main.rs"
 
+[build-dependencies]
+dotenvy = "0.15"
+
 [dependencies]
 anyhow = "1"
 crossterm = { version = "0.28", features = ["event-stream"] }

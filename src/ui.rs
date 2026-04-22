@@ -134,14 +134,28 @@ fn render_form(frame: &mut Frame, app: &App, area: Rect) {
         Paragraph::new("Email").style(Style::new().fg(C_MUTED)),
         rows[7],
     );
-    render_input(frame, app, &app.email, Focus::Email, "name@company.com", rows[8]);
+    render_input(
+        frame,
+        app,
+        &app.email,
+        Focus::Email,
+        "name@company.com",
+        rows[8],
+    );
 
     frame.render_widget(
         Paragraph::new("Password").style(Style::new().fg(C_MUTED)),
         rows[10],
     );
     let masked = "•".repeat(app.password.len());
-    render_input(frame, app, &masked, Focus::Password, "Minimum 8 characters", rows[11]);
+    render_input(
+        frame,
+        app,
+        &masked,
+        Focus::Password,
+        "Minimum 8 characters",
+        rows[11],
+    );
 
     let (primary_label, secondary_label) = match app.mode {
         Mode::Signup => ("[ Create account ]", "I already have an account  Ctrl+L"),
@@ -174,11 +188,19 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
     let inactive = Style::new().fg(C_MUTED).bg(C_SURFACE_STRONG);
 
     frame.render_widget(
-        Paragraph::new(" Create account ").style(if app.mode == Mode::Signup { active } else { inactive }),
+        Paragraph::new(" Create account ").style(if app.mode == Mode::Signup {
+            active
+        } else {
+            inactive
+        }),
         cols[0],
     );
     frame.render_widget(
-        Paragraph::new(" Sign in ").style(if app.mode == Mode::Signin { active } else { inactive }),
+        Paragraph::new(" Sign in ").style(if app.mode == Mode::Signin {
+            active
+        } else {
+            inactive
+        }),
         cols[2],
     );
 }
@@ -235,8 +257,8 @@ fn render_create_input(frame: &mut Frame, value: &str, area: Rect) {
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(value).style(Style::new().fg(C_TEXT)), inner);
 
-    let cursor_x = (inner.x + value.chars().count() as u16)
-        .min(inner.x + inner.width.saturating_sub(1));
+    let cursor_x =
+        (inner.x + value.chars().count() as u16).min(inner.x + inner.width.saturating_sub(1));
     frame.set_cursor_position((cursor_x, inner.y));
 }
 
@@ -284,8 +306,7 @@ fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
     render_status(frame, app, top[2]);
 
     frame.render_widget(
-        Paragraph::new("  Name                   Status   Model")
-            .style(Style::new().fg(C_MUTED)),
+        Paragraph::new("  Name                   Status   Model").style(Style::new().fg(C_MUTED)),
         top[4],
     );
 
@@ -314,8 +335,7 @@ fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
         );
         render_create_input(frame, &app.new_app_name, bottom[3]);
         frame.render_widget(
-            Paragraph::new("Enter · create   Esc · cancel")
-                .style(Style::new().fg(C_MUTED)),
+            Paragraph::new("Enter · create   Esc · cancel").style(Style::new().fg(C_MUTED)),
             bottom[4],
         );
     } else {
@@ -327,8 +347,7 @@ fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
 
         render_apps_list(frame, app, bottom[0]);
         frame.render_widget(
-            Paragraph::new("n · new   Enter · open   s · sign out")
-                .style(Style::new().fg(C_MUTED)),
+            Paragraph::new("n · new   Enter · open   s · sign out").style(Style::new().fg(C_MUTED)),
             bottom[1],
         );
     }
@@ -387,12 +406,20 @@ fn render_apps_list(frame: &mut Frame, app: &App, area: Rect) {
 // Falls back to "–" if the app has no model assigned or the model isn’t in
 // the loaded list yet (models load lazily on first visit to the picker).
 fn resolve_model_name<'a>(app: &'a App, onde_app: &'a OndeApp) -> &'a str {
-    onde_app
+    // Prefer the name the API returned directly on the app object.
+    if let Some(name) = onde_app.active_model.as_deref() {
+        return name;
+    }
+    // Fall back to a lookup in the lazily-loaded models list.
+    if let Some(name) = onde_app
         .current_model_id
         .as_deref()
         .and_then(|id| app.models.iter().find(|m| m.id == id))
         .and_then(|m| m.name.as_deref())
-        .unwrap_or("–")
+    {
+        return name;
+    }
+    "No model assigned yet"
 }
 
 // app detail screen
@@ -441,8 +468,7 @@ fn render_app_detail(frame: &mut Frame, app: &App, area: Rect) {
         );
         render_rename_input(frame, &app.rename_input, rows[14]);
         frame.render_widget(
-            Paragraph::new("Enter · save   Esc · cancel")
-                .style(Style::new().fg(C_MUTED)),
+            Paragraph::new("Enter · save   Esc · cancel").style(Style::new().fg(C_MUTED)),
             rows[15],
         );
     } else {
@@ -487,7 +513,13 @@ fn render_app_detail_header(frame: &mut Frame, onde_app: &OndeApp, status_str: &
     frame.render_widget(Paragraph::new(line), area);
 }
 
-fn render_detail_field(frame: &mut Frame, label: &str, value: &str, label_area: Rect, value_area: Rect) {
+fn render_detail_field(
+    frame: &mut Frame,
+    label: &str,
+    value: &str,
+    label_area: Rect,
+    value_area: Rect,
+) {
     frame.render_widget(
         Paragraph::new(label).style(Style::new().fg(C_MUTED)),
         label_area,
@@ -509,8 +541,8 @@ fn render_rename_input(frame: &mut Frame, value: &str, area: Rect) {
     frame.render_widget(block, area);
     frame.render_widget(Paragraph::new(value).style(Style::new().fg(C_TEXT)), inner);
 
-    let cursor_x = (inner.x + value.chars().count() as u16)
-        .min(inner.x + inner.width.saturating_sub(1));
+    let cursor_x =
+        (inner.x + value.chars().count() as u16).min(inner.x + inner.width.saturating_sub(1));
     frame.set_cursor_position((cursor_x, inner.y));
 }
 
