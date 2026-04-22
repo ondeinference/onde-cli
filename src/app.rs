@@ -13,19 +13,36 @@ use {
     tokio::sync::mpsc,
 };
 
-// app credentials — Onde is a tenant in smbCloud Auth
+// ui.rs imports OndeApp and OndeModel from here instead of depending on the SDK directly.
+pub use smbcloud_gresiq_sdk::{OndeApp, OndeModel};
 
-const APP_ID: &str = "e1098adf-9859-43bf-ae98-514cf66252a5";
-const APP_SECRET: &str = "5bc60b32-c072-40ce-a91f-b289fdee075d";
+// Onde is a tenant in smbCloud Auth. These identify this CLI to the backend.
+// smbCloud Auth credentials — baked in at compile time from the environment.
+// Set these in .env for local builds; inject as secrets in CI.
+pub(crate) const ONDE_APP_ID: &str = env!("ONDE_APP_ID");
+pub(crate) const ONDE_APP_SECRET: &str = env!("ONDE_APP_SECRET");
+
+// GresIQ API credentials for the Onde tenant — distinct from Auth above.
+pub(crate) const GRESIQ_API_KEY: &str = env!("GRESIQ_API_KEY");
+pub(crate) const GRESIQ_API_SECRET: &str = env!("GRESIQ_API_SECRET");
 
 fn credentials() -> ClientCredentials<'static> {
     ClientCredentials {
-        app_id: APP_ID,
-        app_secret: APP_SECRET,
+        app_id: ONDE_APP_ID,
+        app_secret: ONDE_APP_SECRET,
     }
 }
 
-// types
+#[derive(Debug, Clone, PartialEq)]
+pub enum Screen {
+    Auth,
+    Apps,
+    AppDetail,
+    Models,
+    Downloads,
+    ModelDetail,
+    FineTune,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
@@ -37,6 +54,15 @@ pub enum Mode {
 pub enum Focus {
     Email,
     Password,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FineTuneFocus {
+    ModelDir,
+    DataPath,
+    Rank,
+    Epochs,
+    Lr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -79,16 +105,47 @@ pub struct Profile {
 }
 
 pub enum AuthEvent {
+    // auth
     SignupOk(String),
     SigninOk(Profile),
     ProfileOk(Profile),
     SignedOut,
     Failed(String),
+    // apps
+    AppsLoaded(Vec<OndeApp>),
+    AppsLoadFailed(String),
+    AppCreated(OndeApp),
+    AppCreateFailed(String),
+    AppRenamedOk {
+        app_index: usize,
+        new_name: String,
+    },
+    AppRenameFailed(String),
+    // models (remote catalog for assignment)
+    ModelsLoaded(Vec<OndeModel>),
+    ModelsLoadFailed(String),
+    ModelAssigned {
+        app_index: usize,
+        model_id: String,
+    },
+    ModelAssignFailed(String),
+    // downloads (catalog merged with local HF cache)
+    DownloadsLoaded(Vec<crate::hf::MergedModel>),
+    #[allow(dead_code)] // reserved for future explicit error reporting
+    DownloadsLoadFailed(String),
+    // HF Hub search
+    HfSearchResults(Vec<crate::hf_search::HfModelInfo>),
+    HfSearchFailed(String),
+    // Model download
+    ModelDownloadProgress(crate::hf_search::DownloadProgress),
+    ModelDownloadComplete(String), // model_id
+    ModelDownloadFailed(String),
+    // fine-tune
+    FineTuneProgress(crate::finetune::FineTuneProgress),
 }
 
-// app state
-
 pub struct App {
+    // auth
     pub mode: Mode,
     pub email: String,
     pub password: String,
@@ -97,6 +154,50 @@ pub struct App {
     pub busy: bool,
     pub profile: Option<Profile>,
     pub should_quit: bool,
+    // navigation
+    pub screen: Screen,
+    // apps list
+    pub apps: Vec<OndeApp>,
+    pub apps_cursor: usize,
+    pub apps_offset: usize,
+    pub apps_loaded: bool,
+    // models list (remote catalog for assignment)
+    pub models: Vec<OndeModel>,
+    pub models_cursor: usize,
+    pub models_offset: usize,
+    pub models_loaded: bool,
+    // inline create form
+    pub creating_app: bool,
+    pub new_app_name: String,
+    // rename form (used on AppDetail screen)
+    pub renaming_app: bool,
+    pub rename_input: String,
+    // which app we're picking a model for
+    pub assigning_for_app_index: Option<usize>,
+    // local HF cache downloads merged with remote catalog
+    pub downloads: Vec<crate::hf::MergedModel>,
+    pub downloads_cursor: usize,
+    pub downloads_offset: usize,
+    pub downloads_loaded: bool,
+    // HF Hub search
+    pub hf_search_active: bool,
+    pub hf_search_query: String,
+    pub hf_search_results: Vec<crate::hf_search::HfModelInfo>,
+    pub hf_search_cursor: usize,
+    pub hf_search_loading: bool,
+    // Model download (runs in background, does not set app.busy)
+    pub downloading: bool,
+    pub download_progress: Option<crate::hf_search::DownloadProgress>,
+    // fine-tune
+    pub finetune_model_id: String,
+    pub finetune_model_dir: String,
+    pub finetune_data_path: String,
+    pub finetune_rank: String,
+    pub finetune_epochs: String,
+    pub finetune_lr: String,
+    pub finetune_focus: FineTuneFocus,
+    pub finetune_running: bool,
+    pub finetune_progress: Option<crate::finetune::FineTuneProgress>,
 }
 
 impl App {
@@ -110,6 +211,40 @@ impl App {
             busy: false,
             profile: None,
             should_quit: false,
+            screen: Screen::Auth,
+            apps: Vec::new(),
+            apps_cursor: 0,
+            apps_offset: 0,
+            apps_loaded: false,
+            models: Vec::new(),
+            models_cursor: 0,
+            models_offset: 0,
+            models_loaded: false,
+            creating_app: false,
+            new_app_name: String::new(),
+            renaming_app: false,
+            rename_input: String::new(),
+            assigning_for_app_index: None,
+            downloads: Vec::new(),
+            downloads_cursor: 0,
+            downloads_offset: 0,
+            downloads_loaded: false,
+            hf_search_active: false,
+            hf_search_query: String::new(),
+            hf_search_results: Vec::new(),
+            hf_search_cursor: 0,
+            hf_search_loading: false,
+            downloading: false,
+            download_progress: None,
+            finetune_model_id: String::new(),
+            finetune_model_dir: String::new(),
+            finetune_data_path: "~/.onde/finetune/train.jsonl".to_string(),
+            finetune_rank: "8".to_string(),
+            finetune_epochs: "3".to_string(),
+            finetune_lr: "0.0001".to_string(),
+            finetune_focus: FineTuneFocus::ModelDir,
+            finetune_running: false,
+            finetune_progress: None,
         }
     }
 
@@ -131,8 +266,19 @@ impl App {
     }
 
     pub fn apply(&mut self, event: AuthEvent) {
-        self.busy = false;
+        // Download and search events run in the background without the busy flag.
+        match &event {
+            AuthEvent::ModelDownloadProgress(_)
+            | AuthEvent::ModelDownloadComplete(_)
+            | AuthEvent::ModelDownloadFailed(_)
+            | AuthEvent::HfSearchResults(_)
+            | AuthEvent::HfSearchFailed(_) => {}
+            _ => {
+                self.busy = false;
+            }
+        }
         match event {
+            // auth
             AuthEvent::SignupOk(message) => {
                 self.password.clear();
                 self.status = Status::success(message);
@@ -140,44 +286,199 @@ impl App {
             AuthEvent::SigninOk(profile) => {
                 self.password.clear();
                 self.profile = Some(profile);
+                self.screen = Screen::Apps;
                 self.status = Status::success("You're in.");
             }
             AuthEvent::ProfileOk(profile) => {
                 self.profile = Some(profile);
+                self.screen = Screen::Apps;
                 self.status = Status::success("Still signed in.");
             }
             AuthEvent::SignedOut => {
                 token::clear();
                 self.profile = None;
+                self.screen = Screen::Auth;
+                self.apps.clear();
+                self.apps_loaded = false;
+                self.apps_cursor = 0;
+                self.apps_offset = 0;
+                self.models.clear();
+                self.models_loaded = false;
+                self.models_cursor = 0;
+                self.models_offset = 0;
+                self.creating_app = false;
+                self.new_app_name.clear();
+                self.renaming_app = false;
+                self.rename_input.clear();
+                self.assigning_for_app_index = None;
+                self.downloads.clear();
+                self.downloads_loaded = false;
+                self.downloads_cursor = 0;
+                self.downloads_offset = 0;
                 self.status = Status::neutral("Signed out.");
             }
             AuthEvent::Failed(message) => {
                 self.status = Status::error(message);
             }
+            // apps
+            AuthEvent::AppsLoaded(apps) => {
+                self.busy = false;
+                self.apps = apps;
+                self.apps_loaded = true;
+                self.status = Status::success("Apps loaded.");
+            }
+            AuthEvent::AppsLoadFailed(msg) => {
+                self.busy = false;
+                self.status = Status::error(msg);
+            }
+            AuthEvent::AppCreated(app) => {
+                self.busy = false;
+                self.apps.insert(0, app);
+                self.creating_app = false;
+                self.new_app_name.clear();
+                self.status = Status::success("App created.");
+            }
+            AuthEvent::AppCreateFailed(msg) => {
+                self.busy = false;
+                self.status = Status::error(msg);
+            }
+            AuthEvent::AppRenamedOk {
+                app_index,
+                new_name,
+            } => {
+                self.busy = false;
+                self.renaming_app = false;
+                self.rename_input.clear();
+                if let Some(onde_app) = self.apps.get_mut(app_index) {
+                    onde_app.name = new_name;
+                }
+                self.status = Status::success("App renamed.");
+            }
+            AuthEvent::AppRenameFailed(msg) => {
+                self.busy = false;
+                self.status = Status::error(msg);
+            }
+            // models
+            AuthEvent::ModelsLoaded(models) => {
+                self.busy = false;
+                self.models = models;
+                self.models_loaded = true;
+                self.status = Status::neutral("Choose a model.");
+            }
+            AuthEvent::ModelsLoadFailed(msg) => {
+                self.busy = false;
+                self.status = Status::error(msg);
+            }
+            AuthEvent::ModelAssigned {
+                app_index,
+                model_id,
+            } => {
+                self.busy = false;
+                self.screen = Screen::AppDetail;
+                self.assigning_for_app_index = None;
+                if let Some(onde_app) = self.apps.get_mut(app_index) {
+                    // Resolve the display name from the loaded models list so
+                    // the apps list and detail view update immediately without
+                    // a round-trip. Falls back to the raw ID if not found.
+                    let resolved_name = self
+                        .models
+                        .iter()
+                        .find(|m| m.id == model_id)
+                        .and_then(|m| m.name.clone())
+                        .unwrap_or_else(|| model_id.clone());
+                    onde_app.current_model_id = Some(model_id);
+                    onde_app.active_model = Some(resolved_name);
+                }
+                self.status = Status::success("Model assigned.");
+            }
+            AuthEvent::ModelAssignFailed(msg) => {
+                self.busy = false;
+                self.status = Status::error(msg);
+            }
+            // downloads
+            AuthEvent::DownloadsLoaded(models) => {
+                self.busy = false;
+                self.downloads = models;
+                self.downloads_loaded = true;
+                if self.downloads.is_empty() {
+                    self.status = Status::neutral("No models downloaded yet.");
+                } else {
+                    self.status = Status::success(format!(
+                        "{} model{} found.",
+                        self.downloads.len(),
+                        if self.downloads.len() == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+            AuthEvent::DownloadsLoadFailed(msg) => {
+                self.busy = false;
+                self.downloads_loaded = true;
+                self.status = Status::error(msg);
+            }
+            AuthEvent::FineTuneProgress(progress) => {
+                match &progress {
+                    crate::finetune::FineTuneProgress::Done { .. }
+                    | crate::finetune::FineTuneProgress::Failed(_) => {
+                        self.finetune_running = false;
+                    }
+                    _ => {}
+                }
+                self.finetune_progress = Some(progress);
+            }
+            AuthEvent::HfSearchResults(results) => {
+                self.hf_search_loading = false;
+                self.hf_search_cursor = 0;
+                self.hf_search_results = results;
+                self.status = if self.hf_search_results.is_empty() {
+                    Status::neutral("No models found.")
+                } else {
+                    Status::neutral(format!("{} models found.", self.hf_search_results.len()))
+                };
+            }
+            AuthEvent::HfSearchFailed(msg) => {
+                self.hf_search_loading = false;
+                self.status = Status::error(msg);
+            }
+            AuthEvent::ModelDownloadProgress(progress) => {
+                self.download_progress = Some(progress);
+            }
+            AuthEvent::ModelDownloadComplete(model_id) => {
+                self.downloading = false;
+                self.download_progress = None;
+                self.hf_search_active = false;
+                self.hf_search_query.clear();
+                self.hf_search_results.clear();
+                self.hf_search_cursor = 0;
+                self.downloads_loaded = false; // triggers list reload
+                self.status = Status::success(format!("{model_id} downloaded."));
+            }
+            AuthEvent::ModelDownloadFailed(msg) => {
+                self.downloading = false;
+                self.download_progress = None;
+                self.status = Status::error(msg);
+            }
         }
     }
 }
-
-// event loop
 
 pub async fn run(terminal: &mut DefaultTerminal) -> Result<()> {
     let mut app = App::new();
     let (tx, mut rx) = mpsc::unbounded_channel::<AuthEvent>();
     let mut events = EventStream::new();
 
-    // pick up where we left off if there's a saved token
+    // pick up where we left off if there is a saved token
     if let Some(saved_token) = token::load() {
         app.busy = true;
         app.status = Status::neutral("Restoring session…");
-        let tx = tx.clone();
+        let tx2 = tx.clone();
         tokio::spawn(async move {
             match me_with_client(Environment::Production, credentials(), &saved_token).await {
                 Ok(user) => {
-                    let _ = tx.send(AuthEvent::ProfileOk(Profile { email: user.email }));
+                    let _ = tx2.send(AuthEvent::ProfileOk(Profile { email: user.email }));
                 }
                 Err(_) => {
                     token::clear();
-                    let _ = tx.send(AuthEvent::Failed("Session expired. Sign in again.".into()));
+                    let _ = tx2.send(AuthEvent::Failed("Session expired. Sign in again.".into()));
                 }
             }
         });
@@ -199,6 +500,23 @@ pub async fn run(terminal: &mut DefaultTerminal) -> Result<()> {
             maybe = rx.recv() => {
                 if let Some(event) = maybe {
                     app.apply(event);
+                    // kick off apps loading whenever we land on the Apps screen fresh
+                    if app.profile.is_some()
+                        && app.screen == Screen::Apps
+                        && !app.apps_loaded
+                        && !app.busy
+                    {
+                        trigger_load_apps(&mut app, tx.clone());
+                    }
+                    // Reload downloads list after a successful download.
+                    if app.profile.is_some()
+                        && app.screen == Screen::Downloads
+                        && !app.downloads_loaded
+                        && !app.busy
+                        && !app.downloading
+                    {
+                        trigger_load_downloads(&mut app, tx.clone());
+                    }
                 }
             }
         }
@@ -211,7 +529,26 @@ pub async fn run(terminal: &mut DefaultTerminal) -> Result<()> {
     Ok(())
 }
 
-// key handling
+fn trigger_load_apps(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    if app.busy {
+        return;
+    }
+    let token = token::load().unwrap_or_default();
+    app.busy = true;
+    app.status = Status::neutral("Loading apps…");
+    tokio::spawn(async move {
+        match crate::gresiq::load_apps(&token).await {
+            Ok(apps) => {
+                let _ = tx.send(AuthEvent::AppsLoaded(apps));
+            }
+            Err(e) => {
+                let _ = tx.send(AuthEvent::AppsLoadFailed(e.to_string()));
+            }
+        }
+    });
+}
+
+const MAX_VISIBLE: usize = 8;
 
 fn handle_key(
     app: &mut App,
@@ -220,7 +557,7 @@ fn handle_key(
 ) {
     use KeyCode::*;
 
-    // don't process input while a request is in flight — only quit
+    // while a request is in flight only Ctrl+C is allowed
     if app.busy {
         if matches!(
             (key.code, key.modifiers),
@@ -231,39 +568,44 @@ fn handle_key(
         return;
     }
 
+    match app.screen {
+        Screen::Auth => handle_key_auth(app, key, tx),
+        Screen::Apps => handle_key_apps(app, key, tx),
+        Screen::AppDetail => handle_key_app_detail(app, key, tx),
+        Screen::Models => handle_key_models(app, key, tx),
+        Screen::Downloads => handle_key_downloads(app, key, tx),
+        Screen::ModelDetail => handle_key_model_detail(app, key),
+        Screen::FineTune => handle_key_finetune(app, key, tx),
+    }
+}
+
+fn handle_key_auth(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
     match (key.code, key.modifiers) {
-        // Quit
         (Char('c'), KeyModifiers::CONTROL) | (Esc, _) => {
             app.should_quit = true;
         }
-
-        // Tab: cycle focus between fields (only on auth form)
-        (Tab, _) if app.profile.is_none() => {
+        (Tab, _) => {
             app.focus = match app.focus {
                 Focus::Email => Focus::Password,
                 Focus::Password => Focus::Email,
             };
         }
-
-        // Mode switching
-        (Char('l'), KeyModifiers::CONTROL) if app.profile.is_none() => {
+        (Char('l'), KeyModifiers::CONTROL) => {
             app.switch_mode(Mode::Signin);
         }
-        (Char('n'), KeyModifiers::CONTROL) if app.profile.is_none() => {
+        (Char('n'), KeyModifiers::CONTROL) => {
             app.switch_mode(Mode::Signup);
         }
-
-        // Enter: submit form or sign out
         (Enter, _) => {
-            if app.profile.is_some() {
-                sign_out(app, tx);
-            } else {
-                submit(app, tx);
-            }
+            submit(app, tx);
         }
-
-        // Backspace
-        (Backspace, _) if app.profile.is_none() => match app.focus {
+        (Backspace, _) => match app.focus {
             Focus::Email => {
                 app.email.pop();
             }
@@ -271,20 +613,698 @@ fn handle_key(
                 app.password.pop();
             }
         },
-
-        // Regular character input
-        (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) if app.profile.is_none() => {
-            match app.focus {
-                Focus::Email => app.email.push(c),
-                Focus::Password => app.password.push(c),
-            }
-        }
-
+        (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => match app.focus {
+            Focus::Email => app.email.push(c),
+            Focus::Password => app.password.push(c),
+        },
         _ => {}
     }
 }
 
-// auth actions
+fn handle_key_apps(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    if app.creating_app {
+        match (key.code, key.modifiers) {
+            (Esc, _) => {
+                app.creating_app = false;
+                app.new_app_name.clear();
+                app.status = app.idle_status();
+            }
+            (Enter, _) => {
+                submit_create_app(app, tx);
+            }
+            (Backspace, _) => {
+                app.new_app_name.pop();
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                app.new_app_name.push(c);
+            }
+            _ => {}
+        }
+    } else {
+        match (key.code, key.modifiers) {
+            (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+                app.apps_cursor = app.apps_cursor.saturating_sub(1);
+                clamp_apps_scroll(app, MAX_VISIBLE);
+            }
+            (Down, _) | (Char('j'), KeyModifiers::NONE) => {
+                if app.apps_cursor + 1 < app.apps.len() {
+                    app.apps_cursor += 1;
+                }
+                clamp_apps_scroll(app, MAX_VISIBLE);
+            }
+            (Enter, _) => {
+                if !app.apps.is_empty() {
+                    app.screen = Screen::AppDetail;
+                    app.renaming_app = false;
+                    app.rename_input.clear();
+                    let app_name = app
+                        .apps
+                        .get(app.apps_cursor)
+                        .map(|a| a.name.as_str())
+                        .unwrap_or("app");
+                    app.status = Status::neutral(format!(
+                        "{app_name} — m · model   r · rename   Esc · back"
+                    ));
+                }
+            }
+            (Char('n'), KeyModifiers::NONE) => {
+                app.creating_app = true;
+                app.status = Status::neutral("Type a name and press Enter.");
+            }
+            (Tab, _) => {
+                app.screen = Screen::Downloads;
+                app.downloads_cursor = 0;
+                app.downloads_offset = 0;
+                app.downloads_loaded = false;
+                app.downloads.clear();
+                trigger_load_downloads(app, tx);
+            }
+            (Char('s'), KeyModifiers::NONE) | (Char('s'), KeyModifiers::CONTROL) => {
+                sign_out(app, tx);
+            }
+            (Esc, _) | (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn handle_key_app_detail(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    if app.renaming_app {
+        match (key.code, key.modifiers) {
+            (Esc, _) => {
+                app.renaming_app = false;
+                app.rename_input.clear();
+                app.status = Status::neutral("Rename cancelled.");
+            }
+            (Enter, _) => {
+                submit_rename_app(app, tx);
+            }
+            (Backspace, _) => {
+                app.rename_input.pop();
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                app.rename_input.push(c);
+            }
+            _ => {}
+        }
+    } else {
+        match (key.code, key.modifiers) {
+            (Esc, _) => {
+                app.screen = Screen::Apps;
+                app.status = Status::neutral("Back to apps.");
+            }
+            (Char('m'), KeyModifiers::NONE) => {
+                open_model_picker(app, tx);
+            }
+            (Char('r'), KeyModifiers::NONE) => {
+                let current_name = app
+                    .apps
+                    .get(app.apps_cursor)
+                    .map(|a| a.name.clone())
+                    .unwrap_or_default();
+                app.rename_input = current_name;
+                app.renaming_app = true;
+                app.status = Status::neutral("Edit the name and press Enter.");
+            }
+            (Char('s'), KeyModifiers::NONE) => {
+                sign_out(app, tx);
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            _ => {}
+        }
+    }
+}
+
+fn submit_rename_app(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    let name = app.rename_input.trim().to_string();
+    if name.is_empty() {
+        app.status = Status::error("Name cannot be empty.");
+        return;
+    }
+    let Some(onde_app) = app.apps.get(app.apps_cursor) else {
+        return;
+    };
+    let token = token::load().unwrap_or_default();
+    let onde_app_id = onde_app.id.clone();
+    let app_index = app.apps_cursor;
+    app.busy = true;
+    app.status = Status::neutral(format!("Renaming to \"{name}\"\u{2026}"));
+    tokio::spawn(async move {
+        match crate::gresiq::rename_app(&token, &onde_app_id, &name).await {
+            Ok(_) => {
+                let _ = tx.send(AuthEvent::AppRenamedOk {
+                    app_index,
+                    new_name: name,
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(AuthEvent::AppRenameFailed(e.to_string()));
+            }
+        }
+    });
+}
+
+fn handle_key_models(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    match (key.code, key.modifiers) {
+        (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+            app.models_cursor = app.models_cursor.saturating_sub(1);
+            clamp_models_scroll(app, MAX_VISIBLE);
+        }
+        (Down, _) | (Char('j'), KeyModifiers::NONE) => {
+            if app.models_cursor + 1 < app.models.len() {
+                app.models_cursor += 1;
+            }
+            clamp_models_scroll(app, MAX_VISIBLE);
+        }
+        (Enter, _) => {
+            submit_assign_model(app, tx);
+        }
+        (Esc, _) => {
+            app.screen = Screen::AppDetail;
+            app.assigning_for_app_index = None;
+            app.status = Status::neutral("Back to app.");
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        _ => {}
+    }
+}
+
+fn clamp_apps_scroll(app: &mut App, max_visible: usize) {
+    if app.apps_cursor < app.apps_offset {
+        app.apps_offset = app.apps_cursor;
+    } else if app.apps_cursor >= app.apps_offset + max_visible {
+        app.apps_offset = app.apps_cursor + 1 - max_visible;
+    }
+}
+
+fn handle_key_downloads(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    // While a download is running, only allow quit.
+    if app.downloading {
+        if matches!(
+            (key.code, key.modifiers),
+            (Char('c'), KeyModifiers::CONTROL)
+        ) {
+            app.should_quit = true;
+        }
+        return;
+    }
+
+    if app.hf_search_active {
+        match (key.code, key.modifiers) {
+            (Esc, _) => {
+                app.hf_search_active = false;
+                app.hf_search_query.clear();
+                app.hf_search_results.clear();
+                app.hf_search_cursor = 0;
+                app.hf_search_loading = false;
+                app.status = Status::neutral("Search cancelled.");
+            }
+            (Enter, _) => {
+                if !app.hf_search_results.is_empty() {
+                    trigger_download(app, tx);
+                } else if !app.hf_search_query.trim().is_empty() && !app.hf_search_loading {
+                    trigger_hf_search(app, tx);
+                }
+            }
+            (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+                app.hf_search_cursor = app.hf_search_cursor.saturating_sub(1);
+            }
+            (Down, _) | (Char('j'), KeyModifiers::NONE) => {
+                if app.hf_search_cursor + 1 < app.hf_search_results.len() {
+                    app.hf_search_cursor += 1;
+                }
+            }
+            (Backspace, _) => {
+                if !app.hf_search_results.is_empty() {
+                    // Editing query clears old results.
+                    app.hf_search_results.clear();
+                    app.hf_search_cursor = 0;
+                }
+                if app.hf_search_query.pop().is_none() {
+                    app.hf_search_active = false;
+                }
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+                // Editing query clears old results.
+                if !app.hf_search_results.is_empty() {
+                    app.hf_search_results.clear();
+                    app.hf_search_cursor = 0;
+                }
+                app.hf_search_query.push(c);
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // Normal Downloads screen navigation.
+    match (key.code, key.modifiers) {
+        (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+            app.downloads_cursor = app.downloads_cursor.saturating_sub(1);
+            clamp_downloads_scroll(app, MAX_VISIBLE);
+        }
+        (Down, _) | (Char('j'), KeyModifiers::NONE) => {
+            if app.downloads_cursor + 1 < app.downloads.len() {
+                app.downloads_cursor += 1;
+            }
+            clamp_downloads_scroll(app, MAX_VISIBLE);
+        }
+        (Enter, _) => {
+            if !app.downloads.is_empty() {
+                app.screen = Screen::ModelDetail;
+                app.status = Status::neutral("Model details.");
+            }
+        }
+        (Char('/'), KeyModifiers::NONE) => {
+            app.hf_search_active = true;
+            app.hf_search_query.clear();
+            app.hf_search_results.clear();
+            app.hf_search_cursor = 0;
+            app.hf_search_loading = false;
+            app.status = Status::neutral("Search HuggingFace Hub.");
+        }
+        (Esc, _) | (Tab, _) => {
+            app.screen = Screen::Apps;
+            app.status = app.idle_status();
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        _ => {}
+    }
+}
+
+fn handle_key_model_detail(app: &mut App, key: crossterm::event::KeyEvent) {
+    use KeyCode::*;
+
+    match (key.code, key.modifiers) {
+        (Esc, _) => {
+            app.screen = Screen::Downloads;
+            app.status = Status::neutral("Back to models.");
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        (Char('f'), KeyModifiers::NONE) => {
+            if let Some(model) = app.downloads.get(app.downloads_cursor) {
+                app.finetune_model_id = model.model_id.clone();
+                app.finetune_model_dir = resolve_hf_cache_path(&model.model_id);
+                app.finetune_focus = FineTuneFocus::DataPath;
+                app.finetune_running = false;
+                app.finetune_progress = None;
+                app.screen = Screen::FineTune;
+                app.status = Status::neutral("Configure fine-tuning.");
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Resolve a HuggingFace model ID to its local cache snapshot directory.
+///
+/// Priority: App Group (onde-cli download cache) → `$HF_HOME` → `~/.cache/huggingface/hub`.
+/// Looks for `{hub}/models--{org}--{name}/snapshots/{hash}/` and returns the first match,
+/// or an empty string if not found.
+fn resolve_hf_cache_path(model_id: &str) -> String {
+    let dir_name = format!("models--{}", model_id.replace('/', "--"));
+
+    // App Group first (that's where onde-cli downloads), then standard HF cache
+    let candidates: Vec<std::path::PathBuf> = {
+        let mut c = Vec::new();
+        #[cfg(target_os = "macos")]
+        if let Some(home) = dirs::home_dir() {
+            c.push(
+                home.join("Library")
+                    .join("Group Containers")
+                    .join("group.com.ondeinference.apps")
+                    .join("models")
+                    .join("hub"),
+            );
+        }
+        // Check HF_HOME env
+        if let Ok(hf_home) = std::env::var("HF_HOME") {
+            c.push(std::path::PathBuf::from(hf_home).join("hub"));
+        }
+        // ~/.cache/huggingface/hub
+        if let Some(home) = dirs::home_dir() {
+            c.push(home.join(".cache").join("huggingface").join("hub"));
+        }
+        c
+    };
+
+    for hub in candidates {
+        let snapshots_dir = hub.join(&dir_name).join("snapshots");
+        if let Ok(entries) = std::fs::read_dir(&snapshots_dir) {
+            // Pick the first (usually only) snapshot hash directory
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    return p.to_string_lossy().to_string();
+                }
+            }
+        }
+    }
+
+    String::new()
+}
+
+fn handle_key_finetune(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    if app.finetune_running {
+        if matches!(
+            (key.code, key.modifiers),
+            (Char('c'), KeyModifiers::CONTROL)
+        ) {
+            app.should_quit = true;
+        }
+        return;
+    }
+
+    match (key.code, key.modifiers) {
+        (Tab, _) => {
+            app.finetune_focus = match app.finetune_focus {
+                FineTuneFocus::ModelDir => FineTuneFocus::DataPath,
+                FineTuneFocus::DataPath => FineTuneFocus::Rank,
+                FineTuneFocus::Rank => FineTuneFocus::Epochs,
+                FineTuneFocus::Epochs => FineTuneFocus::Lr,
+                FineTuneFocus::Lr => FineTuneFocus::ModelDir,
+            };
+        }
+        (Backspace, _) => match app.finetune_focus {
+            FineTuneFocus::ModelDir => {
+                app.finetune_model_dir.pop();
+            }
+            FineTuneFocus::DataPath => {
+                app.finetune_data_path.pop();
+            }
+            FineTuneFocus::Rank => {
+                app.finetune_rank.pop();
+            }
+            FineTuneFocus::Epochs => {
+                app.finetune_epochs.pop();
+            }
+            FineTuneFocus::Lr => {
+                app.finetune_lr.pop();
+            }
+        },
+        (Enter, _) => {
+            let rank: usize = app.finetune_rank.parse().unwrap_or(8);
+            let epochs: usize = app.finetune_epochs.parse().unwrap_or(3);
+            let lr: f64 = app.finetune_lr.parse().unwrap_or(0.0001);
+
+            // Expand ~ in paths
+            let expand = |s: &str| -> String {
+                if let Some(rest) = s.strip_prefix("~/") {
+                    if let Some(home) = dirs::home_dir() {
+                        return home.join(rest).to_string_lossy().to_string();
+                    }
+                }
+                s.to_string()
+            };
+
+            let model_dir = std::path::PathBuf::from(expand(&app.finetune_model_dir));
+            let data_path = std::path::PathBuf::from(expand(&app.finetune_data_path));
+            let output_dir = model_dir
+                .parent()
+                .unwrap_or(&model_dir)
+                .join("lora-adapter");
+
+            let config = crate::finetune::FineTuneConfig {
+                model_dir,
+                data_path,
+                output_dir,
+                lora_rank: rank,
+                lora_alpha: (rank as f32) * 2.0,
+                learning_rate: lr,
+                epochs,
+                max_seq_len: 512,
+            };
+
+            app.finetune_running = true;
+            app.finetune_progress = None;
+            app.status = Status::neutral("Fine-tuning started…");
+
+            let (ft_tx, mut ft_rx) = mpsc::unbounded_channel();
+            crate::finetune::start_finetune(config, ft_tx);
+
+            let auth_tx = tx.clone();
+            tokio::spawn(async move {
+                while let Some(progress) = ft_rx.recv().await {
+                    let _ = auth_tx.send(AuthEvent::FineTuneProgress(progress));
+                }
+            });
+        }
+        (Esc, _) => {
+            app.screen = Screen::ModelDetail;
+            app.status = Status::neutral("Back to model.");
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => match app.finetune_focus {
+            FineTuneFocus::ModelDir => {
+                app.finetune_model_dir.push(c);
+            }
+            FineTuneFocus::DataPath => {
+                app.finetune_data_path.push(c);
+            }
+            FineTuneFocus::Rank => {
+                app.finetune_rank.push(c);
+            }
+            FineTuneFocus::Epochs => {
+                app.finetune_epochs.push(c);
+            }
+            FineTuneFocus::Lr => {
+                app.finetune_lr.push(c);
+            }
+        },
+        _ => {}
+    }
+}
+
+fn trigger_hf_search(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    let query = app.hf_search_query.trim().to_string();
+    if query.is_empty() {
+        return;
+    }
+    app.hf_search_loading = true;
+    app.hf_search_results.clear();
+    app.hf_search_cursor = 0;
+    app.status = Status::neutral(format!("Searching for \"{query}\"…"));
+    tokio::spawn(async move {
+        match crate::hf_search::search_hf(&query).await {
+            Ok(results) => {
+                let _ = tx.send(AuthEvent::HfSearchResults(results));
+            }
+            Err(e) => {
+                let _ = tx.send(AuthEvent::HfSearchFailed(e.to_string()));
+            }
+        }
+    });
+}
+
+fn trigger_download(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    let Some(model) = app.hf_search_results.get(app.hf_search_cursor) else {
+        return;
+    };
+    let model_id = model.model_id.clone();
+    let hub = crate::hf::preferred_download_hub();
+
+    app.downloading = true;
+    app.download_progress = None;
+    app.status = Status::neutral(format!("Downloading {model_id}…"));
+
+    let (dl_tx, mut dl_rx) = mpsc::unbounded_channel::<crate::hf_search::DownloadEvent>();
+
+    // Task 1: run the download and send DownloadEvents.
+    let model_id_clone = model_id.clone();
+    tokio::spawn(async move {
+        crate::hf_search::download_model(model_id_clone, hub, dl_tx).await;
+    });
+
+    // Task 2: forward DownloadEvents → AuthEvents.
+    let auth_tx = tx.clone();
+    tokio::spawn(async move {
+        while let Some(event) = dl_rx.recv().await {
+            match event {
+                crate::hf_search::DownloadEvent::Progress(p) => {
+                    let _ = auth_tx.send(AuthEvent::ModelDownloadProgress(p));
+                }
+                crate::hf_search::DownloadEvent::Complete => {
+                    let _ = auth_tx.send(AuthEvent::ModelDownloadComplete(model_id.clone()));
+                    break;
+                }
+                crate::hf_search::DownloadEvent::Failed(e) => {
+                    let _ = auth_tx.send(AuthEvent::ModelDownloadFailed(e));
+                    break;
+                }
+            }
+        }
+    });
+}
+
+fn trigger_load_downloads(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    if app.busy {
+        return;
+    }
+    let token = token::load().unwrap_or_default();
+    app.busy = true;
+    app.status = Status::neutral("Scanning models…");
+    tokio::spawn(async move {
+        // Fetch the remote catalog and scan the local cache concurrently.
+        let (catalog_result, local_result) = tokio::join!(
+            crate::gresiq::load_models(&token),
+            tokio::task::spawn_blocking(crate::hf::list_local_models),
+        );
+
+        let catalog = catalog_result.unwrap_or_default();
+        let local = local_result.unwrap_or_default();
+        let merged = crate::hf::merge_models(&catalog, local);
+
+        let _ = tx.send(AuthEvent::DownloadsLoaded(merged));
+    });
+}
+
+fn clamp_downloads_scroll(app: &mut App, max_visible: usize) {
+    if app.downloads_cursor < app.downloads_offset {
+        app.downloads_offset = app.downloads_cursor;
+    } else if app.downloads_cursor >= app.downloads_offset + max_visible {
+        app.downloads_offset = app.downloads_cursor + 1 - max_visible;
+    }
+}
+
+fn clamp_models_scroll(app: &mut App, max_visible: usize) {
+    if app.models_cursor < app.models_offset {
+        app.models_offset = app.models_cursor;
+    } else if app.models_cursor >= app.models_offset + max_visible {
+        app.models_offset = app.models_cursor + 1 - max_visible;
+    }
+}
+
+fn open_model_picker(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    if app.apps.is_empty() || app.busy {
+        return;
+    }
+    app.assigning_for_app_index = Some(app.apps_cursor);
+    app.screen = Screen::Models;
+    app.models_cursor = 0;
+    app.models_offset = 0;
+    if !app.models_loaded {
+        let token = token::load().unwrap_or_default();
+        app.busy = true;
+        app.status = Status::neutral("Loading models…");
+        tokio::spawn(async move {
+            match crate::gresiq::load_models(&token).await {
+                Ok(models) => {
+                    let _ = tx.send(AuthEvent::ModelsLoaded(models));
+                }
+                Err(e) => {
+                    let _ = tx.send(AuthEvent::ModelsLoadFailed(e.to_string()));
+                }
+            }
+        });
+    } else {
+        app.status = Status::neutral("Choose a model.");
+    }
+}
+
+fn submit_create_app(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    let name = app.new_app_name.trim().to_string();
+    if name.is_empty() {
+        return;
+    }
+    let token = token::load().unwrap_or_default();
+    app.busy = true;
+    app.status = Status::neutral(format!("Creating “{name}”…"));
+    tokio::spawn(async move {
+        match crate::gresiq::create_app(&token, &name).await {
+            Ok(created) => {
+                let _ = tx.send(AuthEvent::AppCreated(created));
+            }
+            Err(e) => {
+                let _ = tx.send(AuthEvent::AppCreateFailed(e.to_string()));
+            }
+        }
+    });
+}
+
+fn submit_assign_model(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    if app.busy {
+        return;
+    }
+    let Some(app_index) = app.assigning_for_app_index else {
+        return;
+    };
+    let Some(onde_app) = app.apps.get(app_index) else {
+        return;
+    };
+    let Some(model) = app.models.get(app.models_cursor) else {
+        return;
+    };
+    let token = token::load().unwrap_or_default();
+    let onde_app_id = onde_app.id.clone();
+    let model_id = model.id.clone();
+    let model_name = model.name.clone().unwrap_or_else(|| model_id.clone());
+    app.busy = true;
+    app.status = Status::neutral(format!("Assigning {model_name}…"));
+    tokio::spawn(async move {
+        match crate::gresiq::assign_model(&token, &onde_app_id, &model_id).await {
+            Ok(()) => {
+                let _ = tx.send(AuthEvent::ModelAssigned {
+                    app_index,
+                    model_id,
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(AuthEvent::ModelAssignFailed(e.to_string()));
+            }
+        }
+    });
+}
 
 fn submit(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
     let email = app.email.trim().to_string();
@@ -326,7 +1346,6 @@ fn submit(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
                         if let Err(e) = token::save(&access_token) {
                             log::warn!("Could not persist token: {e}");
                         }
-                        // Fetch profile; fall back to the email typed by the user
                         let profile_email = match me_with_client(
                             Environment::Production,
                             credentials(),
@@ -346,7 +1365,7 @@ fn submit(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
                             .into(),
                     ),
                     Ok(AccountStatus::NotFound) => {
-                        AuthEvent::Failed("That email isn't in our system.".into())
+                        AuthEvent::Failed("That email isn’t in our system.".into())
                     }
                     Err(e) => AuthEvent::Failed(extract_error(&e)),
                 }
@@ -362,9 +1381,8 @@ fn sign_out(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
     app.status = Status::neutral("Signing out…");
 
     tokio::spawn(async move {
-        if let Some(token) = saved_token {
-            // fire and forget — if the server call fails we still clear locally
-            let _ = logout_with_client(Environment::Production, credentials(), token).await;
+        if let Some(t) = saved_token {
+            let _ = logout_with_client(Environment::Production, credentials(), t).await;
         }
         let _ = tx.send(AuthEvent::SignedOut);
     });

@@ -1,4 +1,8 @@
 mod app;
+mod finetune;
+mod gresiq;
+mod hf;
+mod hf_search;
 mod token;
 mod ui;
 
