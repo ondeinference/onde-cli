@@ -1041,8 +1041,10 @@ fn render_model_detail(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1), // 23 Catalog ID value
         Constraint::Length(1), // 24 spacer
         Constraint::Length(1), // 25 Description label
-        Constraint::Min(0),    // 26 Description value (wraps)
-        Constraint::Length(1), // 27 hint
+        Constraint::Length(1), // 26 Description value
+        Constraint::Length(1), // 27 spacer
+        Constraint::Length(1), // 28 Adapters heading
+        Constraint::Min(0),    // 29 Adapters list
     ])
     .split(area);
 
@@ -1085,10 +1087,73 @@ fn render_model_detail(frame: &mut Frame, app: &App, area: Rect) {
         rows[26],
     );
 
+    // Adapters section
+    let adapter_heading = if app.adapter_list.is_empty() {
+        "LoRA Adapters"
+    } else {
+        "LoRA Adapters  (↑↓ select · m merge & export)"
+    };
     frame.render_widget(
-        Paragraph::new("Esc · back to models").style(Style::new().fg(C_MUTED)),
-        rows[27],
+        Paragraph::new(adapter_heading).style(Style::new().fg(C_MUTED)),
+        rows[28],
     );
+    render_model_detail_adapters(frame, app, rows[29]);
+}
+
+/// Render the selectable adapter list inside the Model Detail screen.
+fn render_model_detail_adapters(frame: &mut Frame, app: &App, area: Rect) {
+    if app.adapter_list.is_empty() {
+        frame.render_widget(
+            Paragraph::new("  No adapters found. Press f to fine-tune.")
+                .style(Style::new().fg(C_MUTED)),
+            area,
+        );
+        return;
+    }
+
+    let max_rows = area.height as usize;
+    for (i, adapter) in app.adapter_list.iter().enumerate().take(max_rows) {
+        let row_y = area.y + i as u16;
+        let row_area = Rect::new(area.x, row_y, area.width, 1);
+
+        let is_selected = i == app.adapter_cursor;
+        let marker = if is_selected { "▸ " } else { "  " };
+        let marker_style = if is_selected {
+            Style::new().fg(C_NEON).bold()
+        } else {
+            Style::new().fg(C_NEON)
+        };
+        let name_style = if is_selected {
+            Style::new().fg(C_TEXT).bold()
+        } else {
+            Style::new().fg(C_TEXT)
+        };
+        let meta_style = Style::new().fg(C_MUTED);
+
+        // Truncate dir_name for display
+        let dir_display = if adapter.dir_name.len() > 16 {
+            format!("{}…", &adapter.dir_name[..15])
+        } else {
+            adapter.dir_name.clone()
+        };
+
+        let line = Line::from(vec![
+            Span::styled(marker, marker_style),
+            Span::styled("◆ ", Style::new().fg(C_NEON)),
+            Span::styled(format!("{:<18}", dir_display), name_style),
+            Span::styled(format!("{:<10}", adapter.size), meta_style),
+            Span::styled(&adapter.modified, meta_style),
+        ]);
+
+        if is_selected {
+            frame.render_widget(
+                Paragraph::new(line).style(Style::new().bg(C_SURFACE_STRONG)),
+                row_area,
+            );
+        } else {
+            frame.render_widget(Paragraph::new(line), row_area);
+        }
+    }
 }
 
 fn fmt_bytes(bytes: i64) -> String {
@@ -1102,7 +1167,11 @@ fn fmt_bytes(bytes: i64) -> String {
 }
 
 fn render_finetune(frame: &mut Frame, app: &App, area: Rect) {
-    if app.finetune_running || app.finetune_progress.is_some() {
+    if app.finetune_running
+        || app.merge_running
+        || app.gguf_running
+        || app.finetune_progress.is_some()
+    {
         render_finetune_progress(frame, app, area);
     } else {
         render_finetune_form(frame, app, area);
@@ -1367,7 +1436,7 @@ fn render_finetune_progress(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     // Hint line
-    let hint = if app.finetune_running {
+    let hint = if app.finetune_running || app.merge_running || app.gguf_running {
         "Ctrl+C · quit"
     } else {
         "Esc · back"
@@ -1375,7 +1444,8 @@ fn render_finetune_progress(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(hint).style(Style::new().fg(C_MUTED)), top[5]);
 }
 
-/// Render the fine-tune "Done" state with full adapter details.
+/// Render the fine-tune "Done" state with full adapter details plus merge/export
+/// progress and action hints.
 fn render_finetune_done(frame: &mut Frame, app: &App, adapter_path: &std::path::Path, area: Rect) {
     let rows = Layout::vertical([
         Constraint::Length(1), // 0  ✓ label
@@ -1388,8 +1458,7 @@ fn render_finetune_done(frame: &mut Frame, app: &App, adapter_path: &std::path::
         Constraint::Length(1), // 7  config heading
         Constraint::Length(1), // 8  rank + epochs + lr
         Constraint::Length(1), // 9  spacer
-        Constraint::Length(1), // 10 adapters heading
-        Constraint::Min(0),    // 11 adapters list
+        Constraint::Min(0),    // 10 merge/export section or adapters list
     ])
     .split(area);
 
@@ -1447,12 +1516,159 @@ fn render_finetune_done(frame: &mut Frame, app: &App, adapter_path: &std::path::
         rows[8],
     );
 
-    // Scan for all adapters under this model's snapshots directory
+    // Merge / GGUF export section
+    render_merge_gguf_section(frame, app, rows[10]);
+}
+
+/// Render merge progress, GGUF export progress, and available action hints.
+fn render_merge_gguf_section(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::vertical([
+        Constraint::Length(1), // 0  merge status
+        Constraint::Length(1), // 1  spacer
+        Constraint::Length(1), // 2  gguf status
+        Constraint::Length(1), // 3  spacer
+        Constraint::Length(1), // 4  action hints
+        Constraint::Length(1), // 5  spacer
+        Constraint::Length(1), // 6  adapters heading
+        Constraint::Min(0),    // 7  adapters list
+    ])
+    .split(area);
+
+    // --- Merge status ---
+    match &app.merge_progress {
+        Some(crate::merge::MergeProgress::Loading) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Loading model for merge…").style(Style::new().fg(C_MUTED)),
+                rows[0],
+            );
+        }
+        Some(crate::merge::MergeProgress::Merging { layer, total }) => {
+            frame.render_widget(
+                Paragraph::new(format!("⠿ Merging layer {layer}/{total}…"))
+                    .style(Style::new().fg(C_MUTED)),
+                rows[0],
+            );
+        }
+        Some(crate::merge::MergeProgress::Saving) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Saving merged model…").style(Style::new().fg(C_MUTED)),
+                rows[0],
+            );
+        }
+        Some(crate::merge::MergeProgress::Done { output_path }) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✓ ", Style::new().fg(C_NEON)),
+                    Span::styled("Merged → ", Style::new().fg(C_NEON).bold()),
+                    Span::styled(
+                        output_path.to_string_lossy().to_string(),
+                        Style::new().fg(C_TEXT),
+                    ),
+                ])),
+                rows[0],
+            );
+        }
+        Some(crate::merge::MergeProgress::Failed(msg)) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✗ Merge failed: ", Style::new().fg(C_DANGER).bold()),
+                    Span::styled(msg.as_str(), Style::new().fg(C_DANGER)),
+                ])),
+                rows[0],
+            );
+        }
+        None => {
+            frame.render_widget(
+                Paragraph::new("  Merge: not started").style(Style::new().fg(C_MUTED)),
+                rows[0],
+            );
+        }
+    }
+
+    // --- GGUF export status ---
+    match &app.gguf_progress {
+        Some(crate::gguf::GgufProgress::ReadingModel) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Reading model for GGUF export…").style(Style::new().fg(C_MUTED)),
+                rows[2],
+            );
+        }
+        Some(crate::gguf::GgufProgress::WritingTensor { index, total, name }) => {
+            frame.render_widget(
+                Paragraph::new(format!("⠿ Writing tensor {index}/{total}  {name}"))
+                    .style(Style::new().fg(C_MUTED)),
+                rows[2],
+            );
+        }
+        Some(crate::gguf::GgufProgress::Done {
+            output_path,
+            size_bytes,
+        }) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✓ ", Style::new().fg(C_NEON)),
+                    Span::styled("GGUF → ", Style::new().fg(C_NEON).bold()),
+                    Span::styled(
+                        output_path.to_string_lossy().to_string(),
+                        Style::new().fg(C_TEXT),
+                    ),
+                    Span::styled(
+                        format!("  ({})", fmt_bytes(*size_bytes as i64)),
+                        Style::new().fg(C_MUTED),
+                    ),
+                ])),
+                rows[2],
+            );
+        }
+        Some(crate::gguf::GgufProgress::Failed(msg)) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✗ GGUF failed: ", Style::new().fg(C_DANGER).bold()),
+                    Span::styled(msg.as_str(), Style::new().fg(C_DANGER)),
+                ])),
+                rows[2],
+            );
+        }
+        None => {
+            if app.merged_model_dir.is_some() {
+                frame.render_widget(
+                    Paragraph::new("  GGUF: ready to export").style(Style::new().fg(C_MUTED)),
+                    rows[2],
+                );
+            } else {
+                frame.render_widget(
+                    Paragraph::new("  GGUF: merge first").style(Style::new().fg(C_MUTED)),
+                    rows[2],
+                );
+            }
+        }
+    }
+
+    // --- Action hints ---
+    let mut hints: Vec<Span> = Vec::new();
+    if !app.merge_running && !app.gguf_running {
+        hints.push(Span::styled("m", Style::new().fg(C_NEON)));
+        hints.push(Span::styled(
+            " · merge adapter    ",
+            Style::new().fg(C_MUTED),
+        ));
+        if app.merged_model_dir.is_some() {
+            hints.push(Span::styled("g", Style::new().fg(C_NEON)));
+            hints.push(Span::styled(" · export GGUF    ", Style::new().fg(C_MUTED)));
+        }
+        hints.push(Span::styled("Esc", Style::new().fg(C_NEON)));
+        hints.push(Span::styled(" · back", Style::new().fg(C_MUTED)));
+    }
+    if !hints.is_empty() {
+        frame.render_widget(Paragraph::new(Line::from(hints)), rows[4]);
+    }
+
+    // --- Adapters list ---
     frame.render_widget(
         Paragraph::new("All Adapters").style(Style::new().fg(C_MUTED)),
-        rows[10],
+        rows[6],
     );
-    render_adapter_list(frame, app, rows[11]);
+    render_adapter_list(frame, app, rows[7]);
 }
 
 /// Scan the model's cache directory for existing LoRA adapter files and list them.
@@ -1615,10 +1831,30 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
             Span::styled(" · quit", Style::new().fg(C_MUTED)),
         ],
-        Screen::FineTune if app.finetune_running => vec![
+        Screen::FineTune if app.finetune_running || app.merge_running || app.gguf_running => vec![
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
             Span::styled(" · quit", Style::new().fg(C_MUTED)),
         ],
+        Screen::FineTune
+            if matches!(
+                &app.finetune_progress,
+                Some(crate::finetune::FineTuneProgress::Done { .. })
+            ) =>
+        {
+            let mut keys = vec![
+                Span::styled("m", Style::new().fg(C_NEON)),
+                Span::styled(" · merge    ", Style::new().fg(C_MUTED)),
+            ];
+            if app.merged_model_dir.is_some() {
+                keys.push(Span::styled("g", Style::new().fg(C_NEON)));
+                keys.push(Span::styled(" · export GGUF    ", Style::new().fg(C_MUTED)));
+            }
+            keys.push(Span::styled("Esc", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · back    ", Style::new().fg(C_MUTED)));
+            keys.push(Span::styled("Ctrl+C", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · quit", Style::new().fg(C_MUTED)));
+            keys
+        }
         Screen::FineTune => vec![
             Span::styled("Tab", Style::new().fg(C_NEON)),
             Span::styled(" · next field    ", Style::new().fg(C_MUTED)),
@@ -1629,14 +1865,23 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
             Span::styled(" · quit", Style::new().fg(C_MUTED)),
         ],
-        Screen::ModelDetail => vec![
-            Span::styled("f", Style::new().fg(C_NEON)),
-            Span::styled(" · fine-tune    ", Style::new().fg(C_MUTED)),
-            Span::styled("Esc", Style::new().fg(C_NEON)),
-            Span::styled(" · back    ", Style::new().fg(C_MUTED)),
-            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
-            Span::styled(" · quit", Style::new().fg(C_MUTED)),
-        ],
+        Screen::ModelDetail => {
+            let mut keys = Vec::new();
+            if !app.adapter_list.is_empty() {
+                keys.push(Span::styled("Enter", Style::new().fg(C_NEON)));
+                keys.push(Span::styled(
+                    " · merge & export    ",
+                    Style::new().fg(C_MUTED),
+                ));
+            }
+            keys.push(Span::styled("f", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · fine-tune    ", Style::new().fg(C_MUTED)));
+            keys.push(Span::styled("Esc", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · back    ", Style::new().fg(C_MUTED)));
+            keys.push(Span::styled("Ctrl+C", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · quit", Style::new().fg(C_MUTED)));
+            keys
+        }
     };
 
     frame.render_widget(

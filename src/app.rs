@@ -44,6 +44,19 @@ pub enum Screen {
     FineTune,
 }
 
+/// A discovered LoRA adapter on disk.
+#[derive(Clone)]
+pub struct AdapterEntry {
+    /// Full path to the `lora_adapter.safetensors` file.
+    pub path: std::path::PathBuf,
+    /// Directory name (snapshot hash or "lora-adapter").
+    pub dir_name: String,
+    /// Human-readable file size.
+    pub size: String,
+    /// Relative timestamp ("just now", "3h ago", etc.).
+    pub modified: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Signup,
@@ -142,6 +155,9 @@ pub enum AuthEvent {
     ModelDownloadFailed(String),
     // fine-tune
     FineTuneProgress(crate::finetune::FineTuneProgress),
+    // merge + GGUF export
+    MergeProgress(crate::merge::MergeProgress),
+    GgufProgress(crate::gguf::GgufProgress),
 }
 
 pub struct App {
@@ -198,6 +214,15 @@ pub struct App {
     pub finetune_focus: FineTuneFocus,
     pub finetune_running: bool,
     pub finetune_progress: Option<crate::finetune::FineTuneProgress>,
+    // merge + GGUF export
+    pub merge_running: bool,
+    pub merge_progress: Option<crate::merge::MergeProgress>,
+    pub gguf_running: bool,
+    pub gguf_progress: Option<crate::gguf::GgufProgress>,
+    pub merged_model_dir: Option<std::path::PathBuf>,
+    // adapters discovered on the model detail screen
+    pub adapter_list: Vec<AdapterEntry>,
+    pub adapter_cursor: usize,
 }
 
 impl App {
@@ -245,6 +270,13 @@ impl App {
             finetune_focus: FineTuneFocus::ModelDir,
             finetune_running: false,
             finetune_progress: None,
+            merge_running: false,
+            merge_progress: None,
+            gguf_running: false,
+            gguf_progress: None,
+            merged_model_dir: None,
+            adapter_list: Vec::new(),
+            adapter_cursor: 0,
         }
     }
 
@@ -266,13 +298,15 @@ impl App {
     }
 
     pub fn apply(&mut self, event: AuthEvent) {
-        // Download and search events run in the background without the busy flag.
+        // Download, search, merge, and gguf events run in the background without the busy flag.
         match &event {
             AuthEvent::ModelDownloadProgress(_)
             | AuthEvent::ModelDownloadComplete(_)
             | AuthEvent::ModelDownloadFailed(_)
             | AuthEvent::HfSearchResults(_)
-            | AuthEvent::HfSearchFailed(_) => {}
+            | AuthEvent::HfSearchFailed(_)
+            | AuthEvent::MergeProgress(_)
+            | AuthEvent::GgufProgress(_) => {}
             _ => {
                 self.busy = false;
             }
@@ -457,6 +491,32 @@ impl App {
                 self.download_progress = None;
                 self.status = Status::error(msg);
             }
+            AuthEvent::MergeProgress(progress) => {
+                match &progress {
+                    crate::merge::MergeProgress::Done { output_path } => {
+                        self.merge_running = false;
+                        // Store the merged model directory for GGUF export
+                        if let Some(parent) = output_path.parent() {
+                            self.merged_model_dir = Some(parent.to_path_buf());
+                        }
+                    }
+                    crate::merge::MergeProgress::Failed(_) => {
+                        self.merge_running = false;
+                    }
+                    _ => {}
+                }
+                self.merge_progress = Some(progress);
+            }
+            AuthEvent::GgufProgress(progress) => {
+                match &progress {
+                    crate::gguf::GgufProgress::Done { .. }
+                    | crate::gguf::GgufProgress::Failed(_) => {
+                        self.gguf_running = false;
+                    }
+                    _ => {}
+                }
+                self.gguf_progress = Some(progress);
+            }
         }
     }
 }
@@ -574,7 +634,7 @@ fn handle_key(
         Screen::AppDetail => handle_key_app_detail(app, key, tx),
         Screen::Models => handle_key_models(app, key, tx),
         Screen::Downloads => handle_key_downloads(app, key, tx),
-        Screen::ModelDetail => handle_key_model_detail(app, key),
+        Screen::ModelDetail => handle_key_model_detail(app, key, tx),
         Screen::FineTune => handle_key_finetune(app, key, tx),
     }
 }
@@ -906,8 +966,22 @@ fn handle_key_downloads(
             clamp_downloads_scroll(app, MAX_VISIBLE);
         }
         (Enter, _) if !app.downloads.is_empty() => {
+            // Scan for existing adapters before entering the detail screen
+            if let Some(model) = app.downloads.get(app.downloads_cursor) {
+                let resolved = resolve_hf_cache_path(&model.model_id);
+                app.adapter_list = scan_adapters(&resolved);
+                app.adapter_cursor = 0;
+            }
             app.screen = Screen::ModelDetail;
-            app.status = Status::neutral("Model details.");
+            if app.adapter_list.is_empty() {
+                app.status = Status::neutral("Model details.");
+            } else {
+                app.status = Status::success(format!(
+                    "{} adapter{} found. Enter · merge & export   f · fine-tune new",
+                    app.adapter_list.len(),
+                    if app.adapter_list.len() == 1 { "" } else { "s" }
+                ));
+            }
         }
         (Char('/'), KeyModifiers::NONE) => {
             app.hf_search_active = true;
@@ -928,16 +1002,62 @@ fn handle_key_downloads(
     }
 }
 
-fn handle_key_model_detail(app: &mut App, key: crossterm::event::KeyEvent) {
+fn handle_key_model_detail(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    _tx: mpsc::UnboundedSender<AuthEvent>,
+) {
     use KeyCode::*;
 
     match (key.code, key.modifiers) {
         (Esc, _) => {
             app.screen = Screen::Downloads;
+            app.adapter_list.clear();
+            app.adapter_cursor = 0;
             app.status = Status::neutral("Back to models.");
         }
         (Char('c'), KeyModifiers::CONTROL) => {
             app.should_quit = true;
+        }
+        // Navigate adapter list
+        (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+            app.adapter_cursor = app.adapter_cursor.saturating_sub(1);
+        }
+        (Down, _) | (Char('j'), KeyModifiers::NONE) => {
+            if !app.adapter_list.is_empty() && app.adapter_cursor + 1 < app.adapter_list.len() {
+                app.adapter_cursor += 1;
+            }
+        }
+        // Enter or 'm' — merge the selected adapter (skip fine-tuning)
+        (Enter, _) | (Char('m'), KeyModifiers::NONE) if !app.adapter_list.is_empty() => {
+            if let Some(adapter) = app.adapter_list.get(app.adapter_cursor) {
+                if let Some(model) = app.downloads.get(app.downloads_cursor) {
+                    let resolved = resolve_hf_cache_path(&model.model_id);
+                    if resolved.is_empty() {
+                        app.status = Status::error("Model not downloaded locally.");
+                        return;
+                    }
+
+                    let adapter_path = adapter.path.clone();
+                    app.finetune_model_id = model.model_id.clone();
+                    app.finetune_model_dir = resolved.clone();
+
+                    // Set finetune_progress to Done so the FineTune screen
+                    // shows the post-training view with merge/export actions.
+                    app.finetune_progress = Some(crate::finetune::FineTuneProgress::Done {
+                        adapter_path: adapter_path.clone(),
+                    });
+                    app.finetune_running = false;
+                    app.merge_progress = None;
+                    app.gguf_progress = None;
+                    app.merged_model_dir = None;
+                    app.screen = Screen::FineTune;
+                    app.status =
+                        Status::neutral("Adapter selected. Press m to merge, Esc to go back.");
+                }
+            } else {
+                app.status = Status::error("No adapter selected.");
+            }
         }
         (Char('f'), KeyModifiers::NONE) => {
             if let Some(model) = app.downloads.get(app.downloads_cursor) {
@@ -1016,6 +1136,86 @@ fn resolve_hf_cache_path(model_id: &str) -> String {
     String::new()
 }
 
+/// Scan for existing `lora_adapter.safetensors` files under the model's snapshots
+/// directory. Returns entries sorted by modification time (newest first).
+fn scan_adapters(model_dir: &str) -> Vec<AdapterEntry> {
+    if model_dir.is_empty() {
+        return Vec::new();
+    }
+    let snapshots_dir = std::path::Path::new(model_dir)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+
+    let mut adapters: Vec<AdapterEntry> = Vec::new();
+
+    let Ok(entries) = std::fs::read_dir(snapshots_dir) else {
+        return adapters;
+    };
+
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let adapter_file = dir.join("lora_adapter.safetensors");
+        if !adapter_file.exists() {
+            continue;
+        }
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+        let meta = std::fs::metadata(&adapter_file);
+        let size = meta
+            .as_ref()
+            .map(|m| format_adapter_size(m.len()))
+            .unwrap_or_else(|_| "–".to_string());
+        let modified = meta
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .map(|t| {
+                let elapsed = t.elapsed().unwrap_or_default();
+                let secs = elapsed.as_secs();
+                if secs < 60 {
+                    "just now".to_string()
+                } else if secs < 3600 {
+                    format!("{}m ago", secs / 60)
+                } else if secs < 86400 {
+                    format!("{}h ago", secs / 3600)
+                } else {
+                    format!("{}d ago", secs / 86400)
+                }
+            })
+            .unwrap_or_else(|| "–".to_string());
+        adapters.push(AdapterEntry {
+            path: adapter_file,
+            dir_name,
+            size,
+            modified,
+        });
+    }
+
+    // Sort newest first (largest mtime string first is unreliable, use the file)
+    adapters.sort_by(|a, b| {
+        let ma = std::fs::metadata(&a.path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let mb = std::fs::metadata(&b.path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        mb.cmp(&ma)
+    });
+
+    adapters
+}
+
+fn format_adapter_size(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1}GB", bytes as f64 / 1e9)
+    } else if bytes >= 1_000_000 {
+        format!("{:.0}MB", bytes as f64 / 1e6)
+    } else {
+        format!("{:.0}KB", bytes as f64 / 1e3)
+    }
+}
+
 fn handle_key_finetune(
     app: &mut App,
     key: crossterm::event::KeyEvent,
@@ -1023,7 +1223,8 @@ fn handle_key_finetune(
 ) {
     use KeyCode::*;
 
-    if app.finetune_running {
+    // While any background task is running, only allow Ctrl+C
+    if app.finetune_running || app.merge_running || app.gguf_running {
         if matches!(
             (key.code, key.modifiers),
             (Char('c'), KeyModifiers::CONTROL)
@@ -1031,6 +1232,89 @@ fn handle_key_finetune(
             app.should_quit = true;
         }
         return;
+    }
+
+    // After fine-tune is done: handle merge (m) and GGUF export (g)
+    if let Some(crate::finetune::FineTuneProgress::Done { adapter_path }) = &app.finetune_progress {
+        match (key.code, key.modifiers) {
+            (Char('m'), KeyModifiers::NONE) => {
+                // Start merge: adapter into base model
+                let base_dir = std::path::PathBuf::from({
+                    let raw = &app.finetune_model_dir;
+                    dirs::home_dir()
+                        .and_then(|home| {
+                            raw.strip_prefix("~/")
+                                .map(|rest| home.join(rest).to_string_lossy().to_string())
+                        })
+                        .unwrap_or_else(|| raw.to_string())
+                });
+                let output_dir = base_dir.parent().unwrap_or(&base_dir).join("merged-model");
+
+                let merge_config = crate::merge::MergeConfig {
+                    base_dir,
+                    adapter_path: adapter_path.clone(),
+                    output_dir,
+                };
+
+                app.merge_running = true;
+                app.merge_progress = None;
+                app.status = Status::neutral("Merging adapter…");
+
+                let (merge_tx, mut merge_rx) = mpsc::unbounded_channel();
+                crate::merge::start_merge(merge_config, merge_tx);
+
+                let auth_tx = tx.clone();
+                tokio::spawn(async move {
+                    while let Some(progress) = merge_rx.recv().await {
+                        let _ = auth_tx.send(AuthEvent::MergeProgress(progress));
+                    }
+                });
+                return;
+            }
+            (Char('g'), KeyModifiers::NONE) if app.merged_model_dir.is_some() => {
+                // Start GGUF export from merged model
+                let model_dir = app.merged_model_dir.clone().unwrap_or_default();
+                let output_path = model_dir
+                    .parent()
+                    .unwrap_or(&model_dir)
+                    .join("model-finetuned-q8_0.gguf");
+
+                let gguf_config = crate::gguf::GgufConfig {
+                    model_dir,
+                    output_path,
+                    dtype: crate::gguf::GgufDtype::Q8_0,
+                };
+
+                app.gguf_running = true;
+                app.gguf_progress = None;
+                app.status = Status::neutral("Exporting GGUF…");
+
+                let (gguf_tx, mut gguf_rx) = mpsc::unbounded_channel();
+                crate::gguf::start_gguf_export(gguf_config, gguf_tx);
+
+                let auth_tx = tx.clone();
+                tokio::spawn(async move {
+                    while let Some(progress) = gguf_rx.recv().await {
+                        let _ = auth_tx.send(AuthEvent::GgufProgress(progress));
+                    }
+                });
+                return;
+            }
+            (Esc, _) => {
+                app.screen = Screen::ModelDetail;
+                app.finetune_progress = None;
+                app.merge_progress = None;
+                app.gguf_progress = None;
+                app.merged_model_dir = None;
+                app.status = Status::neutral("Back to model.");
+                return;
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+                return;
+            }
+            _ => return,
+        }
     }
 
     match (key.code, key.modifiers) {

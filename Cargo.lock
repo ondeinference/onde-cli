@@ -2076,6 +2076,7 @@ dependencies = [
  "dirs",
  "dotenvy",
  "futures",
+ "half",
  "libc",
  "log",
  "ratatui",
