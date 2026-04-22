@@ -21,6 +21,7 @@ env:
   ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET }}
   GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY }}
   GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
 jobs:
   build:

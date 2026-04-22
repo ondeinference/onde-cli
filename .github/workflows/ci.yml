@@ -56,6 +56,7 @@ jobs:
           ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET }}
           GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY }}
           GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
   test:
     name: Test
@@ -80,6 +81,7 @@ jobs:
           ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET }}
           GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY }}
           GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
   check:
     name: Cargo check
@@ -104,6 +106,7 @@ jobs:
           ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET }}
           GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY }}
           GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
   build:
     name: Build (aarch64-apple-darwin)
@@ -127,6 +130,7 @@ jobs:
           ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET }}
           GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY }}
           GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
   ci:
     name: CI status

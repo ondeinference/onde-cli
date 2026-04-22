@@ -21,6 +21,7 @@ pub use smbcloud_gresiq_sdk::{OndeApp, OndeModel};
 // Set these in .env for local builds; inject as secrets in CI.
 pub(crate) const ONDE_APP_ID: &str = env!("ONDE_APP_ID");
 pub(crate) const ONDE_APP_SECRET: &str = env!("ONDE_APP_SECRET");
+pub(crate) const HF_TOKEN: &str = env!("HF_TOKEN");
 
 // GresIQ API credentials for the Onde tenant — distinct from Auth above.
 pub(crate) const GRESIQ_API_KEY: &str = env!("GRESIQ_API_KEY");
@@ -42,6 +43,7 @@ pub enum Screen {
     Downloads,
     ModelDetail,
     FineTune,
+    GgufDetail,
 }
 
 /// What kind of artifact was found on disk.
@@ -171,6 +173,8 @@ pub enum AuthEvent {
     // merge + GGUF export
     MergeProgress(crate::merge::MergeProgress),
     GgufProgress(crate::gguf::GgufProgress),
+    // HF upload
+    UploadProgress(crate::hf_upload::UploadProgress),
 }
 
 pub struct App {
@@ -236,6 +240,11 @@ pub struct App {
     // adapters discovered on the model detail screen
     pub adapter_list: Vec<AdapterEntry>,
     pub adapter_cursor: usize,
+    // GGUF detail + upload
+    pub selected_gguf: Option<AdapterEntry>,
+    pub upload_running: bool,
+    pub upload_progress: Option<crate::hf_upload::UploadProgress>,
+    pub upload_repo_name: String,
 }
 
 impl App {
@@ -290,6 +299,10 @@ impl App {
             merged_model_dir: None,
             adapter_list: Vec::new(),
             adapter_cursor: 0,
+            selected_gguf: None,
+            upload_running: false,
+            upload_progress: None,
+            upload_repo_name: String::new(),
         }
     }
 
@@ -319,7 +332,8 @@ impl App {
             | AuthEvent::HfSearchResults(_)
             | AuthEvent::HfSearchFailed(_)
             | AuthEvent::MergeProgress(_)
-            | AuthEvent::GgufProgress(_) => {}
+            | AuthEvent::GgufProgress(_)
+            | AuthEvent::UploadProgress(_) => {}
             _ => {
                 self.busy = false;
             }
@@ -530,6 +544,16 @@ impl App {
                 }
                 self.gguf_progress = Some(progress);
             }
+            AuthEvent::UploadProgress(progress) => {
+                match &progress {
+                    crate::hf_upload::UploadProgress::Done { .. }
+                    | crate::hf_upload::UploadProgress::Failed(_) => {
+                        self.upload_running = false;
+                    }
+                    _ => {}
+                }
+                self.upload_progress = Some(progress);
+            }
         }
     }
 }
@@ -648,6 +672,7 @@ fn handle_key(
         Screen::Models => handle_key_models(app, key, tx),
         Screen::Downloads => handle_key_downloads(app, key, tx),
         Screen::ModelDetail => handle_key_model_detail(app, key, tx),
+        Screen::GgufDetail => handle_key_gguf_detail(app, key, tx),
         Screen::FineTune => handle_key_finetune(app, key, tx),
     }
 }
@@ -1041,6 +1066,32 @@ fn handle_key_model_detail(
                 app.adapter_cursor += 1;
             }
         }
+        // Enter on a GGUF artifact — open GGUF detail screen
+        (Enter, _)
+            if app
+                .adapter_list
+                .get(app.adapter_cursor)
+                .is_some_and(|a| a.kind == ArtifactKind::Gguf) =>
+        {
+            if let Some(entry) = app.adapter_list.get(app.adapter_cursor) {
+                // Derive a default repo name from model + file
+                let base_name = app
+                    .downloads
+                    .get(app.downloads_cursor)
+                    .map(|m| m.model_id.replace('/', "-"))
+                    .unwrap_or_else(|| "finetuned-model".to_string());
+                let stem = entry
+                    .file_name
+                    .strip_suffix(".gguf")
+                    .unwrap_or(&entry.file_name);
+                app.upload_repo_name = format!("ondeinference/{base_name}-{stem}");
+                app.selected_gguf = Some(entry.clone());
+                app.upload_progress = None;
+                app.upload_running = false;
+                app.screen = Screen::GgufDetail;
+                app.status = Status::neutral("GGUF model details. u · upload to HuggingFace");
+            }
+        }
         // Enter or 'm' — merge the selected LoRA adapter (skip fine-tuning)
         (Enter, _) | (Char('m'), KeyModifiers::NONE)
             if app
@@ -1269,6 +1320,103 @@ fn make_artifact_entry(
         modified,
         kind,
     })
+}
+
+fn handle_key_gguf_detail(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    // While uploading, only allow Ctrl+C
+    if app.upload_running {
+        if matches!(
+            (key.code, key.modifiers),
+            (Char('c'), KeyModifiers::CONTROL)
+        ) {
+            app.should_quit = true;
+        }
+        return;
+    }
+
+    // If upload is done or failed, Esc goes back; otherwise show result
+    if let Some(crate::hf_upload::UploadProgress::Done { ref url }) = app.upload_progress {
+        let url_owned = url.clone();
+        match (key.code, key.modifiers) {
+            (Esc, _) => {
+                app.screen = Screen::ModelDetail;
+                app.selected_gguf = None;
+                app.upload_progress = None;
+                app.status = Status::success(format!("Uploaded: {url_owned}"));
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match (key.code, key.modifiers) {
+        (Esc, _) => {
+            app.screen = Screen::ModelDetail;
+            app.selected_gguf = None;
+            app.upload_progress = None;
+            app.status = Status::neutral("Back to model.");
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        // Edit the repo name field
+        (Backspace, _) => {
+            app.upload_repo_name.pop();
+        }
+        // Enter — start the upload
+        (Enter, _) => {
+            if app.upload_repo_name.is_empty() {
+                app.status = Status::error("Repo name cannot be empty.");
+                return;
+            }
+            let token = HF_TOKEN.to_string();
+            if token.is_empty() {
+                app.status = Status::error("No HF_TOKEN set. Add it to .env and rebuild.");
+                return;
+            }
+            let Some(ref gguf) = app.selected_gguf else {
+                app.status = Status::error("No GGUF file selected.");
+                return;
+            };
+
+            let config = crate::hf_upload::UploadConfig {
+                file_path: gguf.path.clone(),
+                repo_id: app.upload_repo_name.clone(),
+                path_in_repo: gguf.file_name.clone(),
+                hf_token: token,
+                commit_message: format!("Upload fine-tuned GGUF: {}", gguf.file_name),
+            };
+
+            app.upload_running = true;
+            app.upload_progress = None;
+            app.status = Status::neutral("Uploading to HuggingFace…");
+
+            let (upload_tx, mut upload_rx) = mpsc::unbounded_channel();
+            let auth_tx = tx.clone();
+            tokio::spawn(async move {
+                crate::hf_upload::start_upload(config, upload_tx).await;
+            });
+            tokio::spawn(async move {
+                while let Some(progress) = upload_rx.recv().await {
+                    let _ = auth_tx.send(AuthEvent::UploadProgress(progress));
+                }
+            });
+        }
+        // Any printable char edits the repo name
+        (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            app.upload_repo_name.push(c);
+        }
+        _ => {}
+    }
 }
 
 fn format_adapter_size(bytes: u64) -> String {

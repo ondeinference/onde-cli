@@ -145,7 +145,7 @@ struct AddedToken {
 // GGUF constants
 // ---------------------------------------------------------------------------
 
-const GGUF_MAGIC: u32 = 0x46475547;
+const GGUF_MAGIC: u32 = 0x46554747;
 const GGUF_VERSION: u32 = 3;
 const ALIGNMENT: u64 = 32;
 

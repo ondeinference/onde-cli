@@ -20,6 +20,7 @@ env:
   ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET }}
   GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY }}
   GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
 jobs:
   build-wheels:
@@ -103,7 +104,7 @@ jobs:
           working-directory: pypi
           args: --release --locked --compatibility pypi --out dist
           before-script-linux: yum install -y perl-core
-          docker-options: -e ONDE_APP_ID -e ONDE_APP_SECRET -e GRESIQ_API_KEY -e GRESIQ_API_SECRET
+          docker-options: -e ONDE_APP_ID -e ONDE_APP_SECRET -e GRESIQ_API_KEY -e GRESIQ_API_SECRET -e HF_TOKEN
 
       - name: Upload wheel artifact
         uses: actions/upload-artifact@v4
