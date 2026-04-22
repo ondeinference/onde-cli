@@ -78,6 +78,7 @@ pub fn start_finetune(
 ) {
     std::thread::spawn(move || {
         if let Err(e) = run_finetune(&config, &tx) {
+            eprintln!("[finetune] error: {e:#}");
             let _ = tx.send(FineTuneProgress::Failed(format!("{e:#}")));
         }
     });
@@ -435,21 +436,29 @@ impl LoraLinear {
     }
 
     /// `y = x W^T + b  +  (x A^T) B^T * scale`
+    ///
+    /// Flattens to 2D before matmul because the published candle-core 0.10.2
+    /// Metal kernel does not support 3D × 2D matmul.
     fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
+        let (b, seq, in_f) = x.dims3()?;
+        let x_flat = x.reshape((b * seq, in_f))?;
+
         // Base projection
-        let base = x.matmul(&self.weight.t()?)?;
-        let base = match &self.bias {
-            Some(b) => base.broadcast_add(b)?,
-            None => base,
-        };
+        let base = x_flat.matmul(&self.weight.t()?)?;
 
         // LoRA path: x A^T → x B^T scaled
-        let lora = x
+        let lora = x_flat
             .matmul(&self.lora_a.as_tensor().t()?)?
             .matmul(&self.lora_b.as_tensor().t()?)?
             .affine(self.scale, 0.0)?;
 
-        base + lora
+        let out_f = self.weight.dim(0)?;
+        let combined = (base + lora)?.reshape((b, seq, out_f))?;
+
+        match &self.bias {
+            Some(bias) => combined.broadcast_add(bias),
+            None => Ok(combined),
+        }
     }
 
     /// Return the two trainable LoRA variables.
@@ -469,9 +478,13 @@ struct FrozenLinear {
 
 impl FrozenLinear {
     fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
-        let out = x.matmul(&self.weight.t()?)?;
+        let (b, seq, in_f) = x.dims3()?;
+        let x_flat = x.reshape((b * seq, in_f))?;
+        let out_flat = x_flat.matmul(&self.weight.t()?)?;
+        let out_f = self.weight.dim(0)?;
+        let out = out_flat.reshape((b, seq, out_f))?;
         match &self.bias {
-            Some(b) => out.broadcast_add(b),
+            Some(bias) => out.broadcast_add(bias),
             None => Ok(out),
         }
     }
@@ -578,7 +591,9 @@ impl TransformerLayer {
         // (1 - tril) is 1 on upper triangle (blocked), 0 on lower triangle (allowed).
         let attn_bias = (1.0f64 - &tril)?.affine(-1e9, 0.0)?;
         let attn_weights = (attn_weights + attn_bias)?;
-        let attn_weights = candle_nn::ops::softmax_last_dim(&attn_weights)?;
+        // Use the generic softmax (broadcast_sub/broadcast_div internally) — the
+        // CustomOp-based softmax_last_dim has no Metal implementation in candle 0.10.2.
+        let attn_weights = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
 
         // Weighted sum of values
         let attn_out = attn_weights.matmul(&v)?;
@@ -802,8 +817,10 @@ impl LoraQwenModel {
         // Final RMSNorm
         let hidden = rms_norm(&hidden, &self.norm, self.rms_norm_eps)?;
 
-        // Language model head: [b, seq, vocab_size]
-        hidden.matmul(&self.lm_head.t()?)
+        // Language model head: flatten → matmul → reshape (Metal 3D×2D workaround)
+        let hidden_flat = hidden.reshape((b * seq, self.hidden_size))?;
+        let logits_flat = hidden_flat.matmul(&self.lm_head.t()?)?;
+        logits_flat.reshape((b, seq, self.vocab_size))
     }
 
     /// Collect all trainable LoRA variables across every layer.
