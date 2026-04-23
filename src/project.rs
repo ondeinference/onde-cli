@@ -241,7 +241,7 @@ pub fn scan_project_artifacts(project: &OndeProject) -> Vec<ProjectArtifact> {
     }
 
     // Newest first
-    artifacts.sort_by(|a, b| b.modified_ts.cmp(&a.modified_ts));
+    artifacts.sort_by_key(|a| std::cmp::Reverse(a.modified_ts));
     artifacts
 }
 
