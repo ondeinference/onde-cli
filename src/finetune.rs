@@ -233,10 +233,12 @@ fn run_finetune(
         lr: config.learning_rate,
         ..ParamsAdamW::default()
     };
-    let mut optimizer = AdamW::new(lora_vars, adamw_params).context("creating AdamW optimizer")?;
+    let mut optimizer =
+        AdamW::new(lora_vars.clone(), adamw_params).context("creating AdamW optimizer")?;
 
     let total_steps = token_batches.len();
     let vocab_size = model_cfg.vocab_size;
+    let max_grad_norm: f64 = 1.0;
 
     for epoch in 0..config.epochs {
         for (step, batch_tokens) in token_batches.iter().enumerate() {
@@ -259,9 +261,67 @@ fn run_finetune(
             let loss = candle_nn::loss::cross_entropy(&logits_shifted, &targets)
                 .context("computing cross-entropy loss")?;
 
-            optimizer.backward_step(&loss).context("optimizer step")?;
-
             let loss_val = loss.to_scalar::<f32>().context("reading loss scalar")?;
+
+            // Guard against NaN/Inf loss — skip this step to avoid poisoning
+            // the optimizer state.
+            if loss_val.is_nan() || loss_val.is_infinite() {
+                eprintln!(
+                    "[finetune] WARNING: loss is {} at epoch {} step {}, skipping",
+                    loss_val,
+                    epoch + 1,
+                    step + 1
+                );
+                let _ = tx.send(FineTuneProgress::Training {
+                    epoch: epoch + 1,
+                    total_epochs: config.epochs,
+                    step: step + 1,
+                    total_steps,
+                    loss: loss_val,
+                });
+                continue;
+            }
+
+            // Manual backward + gradient clipping + optimizer step.
+            //
+            // We avoid `backward_step` so we can clip gradients between the
+            // backward pass and the AdamW update.  This preserves AdamW's
+            // momentum / velocity state (unlike manually applying lr * grad).
+            let grads = loss.backward().context("backward pass")?;
+
+            // Compute global gradient L2 norm across all LoRA variables.
+            let mut total_norm_sq: f64 = 0.0;
+            for var in &lora_vars {
+                if let Some(grad) = grads.get(var.as_tensor()) {
+                    let norm_sq = grad
+                        .sqr()
+                        .and_then(|t| t.sum_all())
+                        .and_then(|t| t.to_scalar::<f32>())
+                        .unwrap_or(0.0) as f64;
+                    total_norm_sq += norm_sq;
+                }
+            }
+            let total_norm = total_norm_sq.sqrt();
+
+            // If the global norm exceeds the threshold, scale every gradient
+            // down and insert the clipped version back into the GradStore.
+            let grads = if total_norm > max_grad_norm {
+                let clip_coef = max_grad_norm / (total_norm + 1e-6);
+                let mut clipped_grads = grads;
+                for var in &lora_vars {
+                    if let Some(grad) = clipped_grads.get(var.as_tensor()) {
+                        let clipped = (grad * clip_coef).context("clipping gradient")?;
+                        clipped_grads.insert(var.as_tensor(), clipped);
+                    }
+                }
+                clipped_grads
+            } else {
+                grads
+            };
+
+            // AdamW step with (possibly clipped) gradients — preserves
+            // first-moment and second-moment estimates.
+            optimizer.step(&grads).context("optimizer step")?;
 
             let _ = tx.send(FineTuneProgress::Training {
                 epoch: epoch + 1,

@@ -86,6 +86,7 @@ fn render_card(frame: &mut Frame, app: &App, area: Rect) {
         Screen::ModelDetail => render_model_detail(frame, app, inner),
         Screen::GgufDetail => render_gguf_detail(frame, app, inner),
         Screen::FineTune => render_finetune(frame, app, inner),
+        Screen::CloneRepo => render_clone_repo(frame, app, inner),
     }
 }
 
@@ -1976,6 +1977,148 @@ fn render_adapter_list(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn render_clone_repo(frame: &mut Frame, app: &App, area: Rect) {
+    let is_picking_base = matches!(
+        &app.clone_repo_status,
+        Some(crate::hf_clone::RepoStatus::Empty { .. })
+    );
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // 0  heading
+        Constraint::Length(1), // 1  spacer
+        Constraint::Length(1), // 2  status
+        Constraint::Length(1), // 3  spacer
+        Constraint::Length(1), // 4  Repo ID label
+        Constraint::Length(3), // 5  Repo ID input
+        Constraint::Length(1), // 6  spacer
+        Constraint::Length(1), // 7  result heading
+        Constraint::Min(0),    // 8  result / base model list
+    ])
+    .split(area);
+
+    // Heading
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Clone / Check HuggingFace Repo",
+            Style::new().fg(C_INK).bold(),
+        ))),
+        rows[0],
+    );
+
+    render_status(frame, app, rows[2]);
+
+    // Repo ID input
+    frame.render_widget(
+        Paragraph::new("Repo ID (e.g. ondeinference/joko)").style(Style::new().fg(C_MUTED)),
+        rows[4],
+    );
+
+    let input_focused = !app.clone_repo_checking && !is_picking_base;
+    let border_style = if input_focused {
+        Style::new().fg(C_NEON)
+    } else {
+        Style::new().fg(C_LINE)
+    };
+    let input_block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .style(Style::new().bg(C_SURFACE_STRONG));
+    let input_inner = input_block.inner(rows[5]);
+    frame.render_widget(input_block, rows[5]);
+    frame.render_widget(
+        Paragraph::new(app.clone_repo_id.as_str()).style(Style::new().fg(C_TEXT)),
+        input_inner,
+    );
+    if input_focused {
+        let cursor_x = (input_inner.x + app.clone_repo_id.chars().count() as u16)
+            .min(input_inner.x + input_inner.width.saturating_sub(1));
+        frame.set_cursor_position((cursor_x, input_inner.y));
+    }
+
+    // Result section
+    match &app.clone_repo_status {
+        Some(crate::hf_clone::RepoStatus::NotFound) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✗ ", Style::new().fg(C_DANGER)),
+                    Span::styled(
+                        "Repo not found. Press Enter to create it.",
+                        Style::new().fg(C_MUTED),
+                    ),
+                ])),
+                rows[7],
+            );
+        }
+        Some(crate::hf_clone::RepoStatus::HasModel { files, .. }) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✓ ", Style::new().fg(C_NEON)),
+                    Span::styled(
+                        format!("Repo has {} model file(s). Already set up.", files.len()),
+                        Style::new().fg(C_NEON),
+                    ),
+                ])),
+                rows[7],
+            );
+        }
+        Some(crate::hf_clone::RepoStatus::Empty { .. }) => {
+            frame.render_widget(
+                Paragraph::new("Select a base model for fine-tuning:")
+                    .style(Style::new().fg(C_MUTED)),
+                rows[7],
+            );
+
+            // Render base model list
+            let base_models = crate::hf_clone::BASE_MODELS;
+            let items: Vec<Line> = base_models
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let selected = i == app.clone_base_cursor;
+                    let prefix = if selected { "▸ " } else { "  " };
+                    let style = if selected {
+                        Style::new().fg(C_NEON).bold()
+                    } else {
+                        Style::new().fg(C_TEXT)
+                    };
+                    Line::from(vec![
+                        Span::styled(prefix, style),
+                        Span::styled(m.display_name, style),
+                        Span::styled(
+                            format!("  {}  {}", m.size_display, m.params),
+                            Style::new().fg(C_MUTED),
+                        ),
+                    ])
+                })
+                .collect();
+
+            // Add description of selected model below the list
+            let selected_desc = base_models
+                .get(app.clone_base_cursor)
+                .map(|m| m.description)
+                .unwrap_or("");
+
+            let mut all_lines = items;
+            all_lines.push(Line::from(""));
+            all_lines.push(Line::from(Span::styled(
+                selected_desc,
+                Style::new().fg(C_MUTED).italic(),
+            )));
+
+            frame.render_widget(Paragraph::new(all_lines), rows[8]);
+        }
+        None => {
+            if app.clone_repo_checking {
+                frame.render_widget(
+                    Paragraph::new("⠿ Checking…").style(Style::new().fg(C_MUTED)),
+                    rows[7],
+                );
+            }
+        }
+    }
+}
+
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let keys: Vec<Span> = match app.screen {
         Screen::Auth => vec![
@@ -2059,6 +2202,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" · navigate    ", Style::new().fg(C_MUTED)),
             Span::styled("/", Style::new().fg(C_NEON)),
             Span::styled(" · search HF    ", Style::new().fg(C_MUTED)),
+            Span::styled("c", Style::new().fg(C_NEON)),
+            Span::styled(" · clone repo    ", Style::new().fg(C_MUTED)),
             Span::styled("Enter", Style::new().fg(C_NEON)),
             Span::styled(" · detail    ", Style::new().fg(C_MUTED)),
             Span::styled("Tab", Style::new().fg(C_NEON)),
@@ -2124,6 +2269,35 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         Screen::GgufDetail => vec![
             Span::styled("Enter", Style::new().fg(C_NEON)),
             Span::styled(" · upload    ", Style::new().fg(C_MUTED)),
+            Span::styled("Esc", Style::new().fg(C_NEON)),
+            Span::styled(" · back    ", Style::new().fg(C_MUTED)),
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::CloneRepo if app.clone_repo_checking => vec![
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::CloneRepo
+            if matches!(
+                &app.clone_repo_status,
+                Some(crate::hf_clone::RepoStatus::Empty { .. })
+            ) =>
+        {
+            vec![
+                Span::styled("↑↓", Style::new().fg(C_NEON)),
+                Span::styled(" · navigate    ", Style::new().fg(C_MUTED)),
+                Span::styled("Enter", Style::new().fg(C_NEON)),
+                Span::styled(" · select & download    ", Style::new().fg(C_MUTED)),
+                Span::styled("Esc", Style::new().fg(C_NEON)),
+                Span::styled(" · back    ", Style::new().fg(C_MUTED)),
+                Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+                Span::styled(" · quit", Style::new().fg(C_MUTED)),
+            ]
+        }
+        Screen::CloneRepo => vec![
+            Span::styled("Enter", Style::new().fg(C_NEON)),
+            Span::styled(" · check repo    ", Style::new().fg(C_MUTED)),
             Span::styled("Esc", Style::new().fg(C_NEON)),
             Span::styled(" · back    ", Style::new().fg(C_MUTED)),
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
