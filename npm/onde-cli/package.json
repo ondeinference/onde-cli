@@ -1,0 +1,45 @@
+{
+  "name": "@ondeinference/cli",
+  "version": "0.0.0-dev",
+  "keywords": [
+    "onde",
+    "cli",
+    "onde-cli",
+    "inference",
+    "llm",
+    "ai",
+    "on-device",
+    "developer",
+    "tools"
+  ],
+  "bin": {
+    "onde": "lib/index.js"
+  },
+  "files": [
+    "lib",
+    "README.md"
+  ],
+  "description": "A CLI for managing your Onde Inference account and models.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ondeinference/onde-cli.git"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "dev": "npm run build && node lib/index.js"
+  },
+  "devDependencies": {
+    "@types/node": "^18.15.11",
+    "typescript": "^5.0.0"
+  },
+  "optionalDependencies": {
+    "@ondeinference/cli-darwin-arm64": "0.0.0-dev",
+    "@ondeinference/cli-darwin-x64": "0.0.0-dev",
+    "@ondeinference/cli-linux-arm64": "0.0.0-dev",
+    "@ondeinference/cli-linux-x64": "0.0.0-dev",
+    "@ondeinference/cli-windows-arm64": "0.0.0-dev",
+    "@ondeinference/cli-windows-x64": "0.0.0-dev"
+  }
+}

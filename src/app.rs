@@ -21,6 +21,7 @@ pub use smbcloud_gresiq_sdk::{OndeApp, OndeModel};
 // Set these in .env for local builds; inject as secrets in CI.
 pub(crate) const ONDE_APP_ID: &str = env!("ONDE_APP_ID");
 pub(crate) const ONDE_APP_SECRET: &str = env!("ONDE_APP_SECRET");
+pub(crate) const HF_TOKEN: &str = env!("HF_TOKEN");
 
 // GresIQ API credentials for the Onde tenant — distinct from Auth above.
 pub(crate) const GRESIQ_API_KEY: &str = env!("GRESIQ_API_KEY");
@@ -42,6 +43,34 @@ pub enum Screen {
     Downloads,
     ModelDetail,
     FineTune,
+    GgufDetail,
+    CloneRepo,
+}
+
+/// What kind of artifact was found on disk.
+#[derive(Clone, PartialEq)]
+pub enum ArtifactKind {
+    /// A LoRA adapter (lora_adapter.safetensors).
+    LoraAdapter,
+    /// An exported GGUF model (.gguf file).
+    Gguf,
+}
+
+/// A discovered artifact (adapter or exported model) on disk.
+#[derive(Clone)]
+pub struct AdapterEntry {
+    /// Full path to the file.
+    pub path: std::path::PathBuf,
+    /// Directory name (snapshot hash or "lora-adapter").
+    pub dir_name: String,
+    /// File name for GGUF files, or "lora_adapter.safetensors" for adapters.
+    pub file_name: String,
+    /// Human-readable file size.
+    pub size: String,
+    /// Relative timestamp ("just now", "3h ago", etc.).
+    pub modified: String,
+    /// Whether this is a LoRA adapter or a GGUF export.
+    pub kind: ArtifactKind,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -142,6 +171,12 @@ pub enum AuthEvent {
     ModelDownloadFailed(String),
     // fine-tune
     FineTuneProgress(crate::finetune::FineTuneProgress),
+    // merge + GGUF export
+    MergeProgress(crate::merge::MergeProgress),
+    GgufProgress(crate::gguf::GgufProgress),
+    // HF upload
+    UploadProgress(crate::hf_upload::UploadProgress),
+    CloneProgress(crate::hf_clone::CloneProgress),
 }
 
 pub struct App {
@@ -198,6 +233,28 @@ pub struct App {
     pub finetune_focus: FineTuneFocus,
     pub finetune_running: bool,
     pub finetune_progress: Option<crate::finetune::FineTuneProgress>,
+    // merge + GGUF export
+    pub merge_running: bool,
+    pub merge_progress: Option<crate::merge::MergeProgress>,
+    pub gguf_running: bool,
+    pub gguf_progress: Option<crate::gguf::GgufProgress>,
+    pub merged_model_dir: Option<std::path::PathBuf>,
+    // adapters discovered on the model detail screen
+    pub adapter_list: Vec<AdapterEntry>,
+    pub adapter_cursor: usize,
+    // GGUF detail + upload
+    pub selected_gguf: Option<AdapterEntry>,
+    pub upload_running: bool,
+    pub upload_progress: Option<crate::hf_upload::UploadProgress>,
+    pub upload_repo_name: String,
+    // active project (set when entering fine-tune from CloneRepo)
+    pub current_project: Option<crate::project::OndeProject>,
+    // clone repo (check + base model selection)
+    pub clone_repo_id: String,
+    pub clone_repo_checking: bool,
+    pub clone_repo_status: Option<crate::hf_clone::RepoStatus>,
+    pub clone_base_cursor: usize,
+    pub clone_progress: Option<crate::hf_clone::CloneProgress>,
 }
 
 impl App {
@@ -238,13 +295,30 @@ impl App {
             download_progress: None,
             finetune_model_id: String::new(),
             finetune_model_dir: String::new(),
-            finetune_data_path: "~/.onde/finetune/train.jsonl".to_string(),
+            finetune_data_path: String::new(),
             finetune_rank: "8".to_string(),
             finetune_epochs: "3".to_string(),
-            finetune_lr: "0.0001".to_string(),
+            finetune_lr: "0.00001".to_string(),
             finetune_focus: FineTuneFocus::ModelDir,
             finetune_running: false,
             finetune_progress: None,
+            merge_running: false,
+            merge_progress: None,
+            gguf_running: false,
+            gguf_progress: None,
+            merged_model_dir: None,
+            adapter_list: Vec::new(),
+            adapter_cursor: 0,
+            selected_gguf: None,
+            upload_running: false,
+            upload_progress: None,
+            upload_repo_name: String::new(),
+            current_project: None,
+            clone_repo_id: String::new(),
+            clone_repo_checking: false,
+            clone_repo_status: None,
+            clone_base_cursor: 0,
+            clone_progress: None,
         }
     }
 
@@ -266,13 +340,17 @@ impl App {
     }
 
     pub fn apply(&mut self, event: AuthEvent) {
-        // Download and search events run in the background without the busy flag.
+        // Download, search, merge, and gguf events run in the background without the busy flag.
         match &event {
             AuthEvent::ModelDownloadProgress(_)
             | AuthEvent::ModelDownloadComplete(_)
             | AuthEvent::ModelDownloadFailed(_)
             | AuthEvent::HfSearchResults(_)
-            | AuthEvent::HfSearchFailed(_) => {}
+            | AuthEvent::HfSearchFailed(_)
+            | AuthEvent::MergeProgress(_)
+            | AuthEvent::GgufProgress(_)
+            | AuthEvent::UploadProgress(_)
+            | AuthEvent::CloneProgress(_) => {}
             _ => {
                 self.busy = false;
             }
@@ -457,6 +535,80 @@ impl App {
                 self.download_progress = None;
                 self.status = Status::error(msg);
             }
+            AuthEvent::MergeProgress(progress) => {
+                match &progress {
+                    crate::merge::MergeProgress::Done { output_path } => {
+                        self.merge_running = false;
+                        // Store the merged model directory for GGUF export
+                        if let Some(parent) = output_path.parent() {
+                            self.merged_model_dir = Some(parent.to_path_buf());
+                        }
+                    }
+                    crate::merge::MergeProgress::Failed(_) => {
+                        self.merge_running = false;
+                    }
+                    _ => {}
+                }
+                self.merge_progress = Some(progress);
+            }
+            AuthEvent::GgufProgress(progress) => {
+                match &progress {
+                    crate::gguf::GgufProgress::Done { .. }
+                    | crate::gguf::GgufProgress::Failed(_) => {
+                        self.gguf_running = false;
+                    }
+                    _ => {}
+                }
+                self.gguf_progress = Some(progress);
+            }
+            AuthEvent::UploadProgress(progress) => {
+                match &progress {
+                    crate::hf_upload::UploadProgress::Done { .. }
+                    | crate::hf_upload::UploadProgress::Failed(_) => {
+                        self.upload_running = false;
+                    }
+                    _ => {}
+                }
+                self.upload_progress = Some(progress);
+            }
+            AuthEvent::CloneProgress(progress) => {
+                match &progress {
+                    crate::hf_clone::CloneProgress::RepoChecked(status) => {
+                        self.clone_repo_checking = false;
+                        self.clone_repo_status = Some(status.clone());
+                        match status {
+                            crate::hf_clone::RepoStatus::NotFound => {
+                                self.status =
+                                    Status::neutral("Repo not found. Press Enter to create it.");
+                            }
+                            crate::hf_clone::RepoStatus::Empty { .. } => {
+                                self.status = Status::neutral(
+                                    "Repo is empty — pick a base model to fine-tune.",
+                                );
+                            }
+                            crate::hf_clone::RepoStatus::HasModel { .. } => {
+                                self.status = Status::success("Repo already has model files.");
+                            }
+                        }
+                    }
+                    crate::hf_clone::CloneProgress::RepoReady => {
+                        self.clone_repo_checking = false;
+                        self.status =
+                            Status::success("Repo created. Pick a base model to fine-tune.");
+                        // After creating, set status to Empty so the UI shows base model picker
+                        self.clone_repo_status = Some(crate::hf_clone::RepoStatus::Empty {
+                            repo_id: self.clone_repo_id.clone(),
+                            files: vec![],
+                        });
+                    }
+                    crate::hf_clone::CloneProgress::Failed(msg) => {
+                        self.clone_repo_checking = false;
+                        self.status = Status::error(msg.clone());
+                    }
+                    _ => {}
+                }
+                self.clone_progress = Some(progress);
+            }
         }
     }
 }
@@ -574,8 +726,10 @@ fn handle_key(
         Screen::AppDetail => handle_key_app_detail(app, key, tx),
         Screen::Models => handle_key_models(app, key, tx),
         Screen::Downloads => handle_key_downloads(app, key, tx),
-        Screen::ModelDetail => handle_key_model_detail(app, key),
+        Screen::ModelDetail => handle_key_model_detail(app, key, tx),
+        Screen::GgufDetail => handle_key_gguf_detail(app, key, tx),
         Screen::FineTune => handle_key_finetune(app, key, tx),
+        Screen::CloneRepo => handle_key_clone_repo(app, key, tx),
     }
 }
 
@@ -661,20 +815,17 @@ fn handle_key_apps(
                 }
                 clamp_apps_scroll(app, MAX_VISIBLE);
             }
-            (Enter, _) => {
-                if !app.apps.is_empty() {
-                    app.screen = Screen::AppDetail;
-                    app.renaming_app = false;
-                    app.rename_input.clear();
-                    let app_name = app
-                        .apps
-                        .get(app.apps_cursor)
-                        .map(|a| a.name.as_str())
-                        .unwrap_or("app");
-                    app.status = Status::neutral(format!(
-                        "{app_name} — m · model   r · rename   Esc · back"
-                    ));
-                }
+            (Enter, _) if !app.apps.is_empty() => {
+                app.screen = Screen::AppDetail;
+                app.renaming_app = false;
+                app.rename_input.clear();
+                let app_name = app
+                    .apps
+                    .get(app.apps_cursor)
+                    .map(|a| a.name.as_str())
+                    .unwrap_or("app");
+                app.status =
+                    Status::neutral(format!("{app_name} — m · model   r · rename   Esc · back"));
             }
             (Char('n'), KeyModifiers::NONE) => {
                 app.creating_app = true;
@@ -865,10 +1016,10 @@ fn handle_key_downloads(
             (Up, _) | (Char('k'), KeyModifiers::NONE) => {
                 app.hf_search_cursor = app.hf_search_cursor.saturating_sub(1);
             }
-            (Down, _) | (Char('j'), KeyModifiers::NONE) => {
-                if app.hf_search_cursor + 1 < app.hf_search_results.len() {
-                    app.hf_search_cursor += 1;
-                }
+            (Down, _) | (Char('j'), KeyModifiers::NONE)
+                if app.hf_search_cursor + 1 < app.hf_search_results.len() =>
+            {
+                app.hf_search_cursor += 1;
             }
             (Backspace, _) => {
                 if !app.hf_search_results.is_empty() {
@@ -908,11 +1059,32 @@ fn handle_key_downloads(
             }
             clamp_downloads_scroll(app, MAX_VISIBLE);
         }
-        (Enter, _) => {
-            if !app.downloads.is_empty() {
-                app.screen = Screen::ModelDetail;
-                app.status = Status::neutral("Model details.");
+        (Enter, _) if !app.downloads.is_empty() => {
+            // Scan for existing adapters before entering the detail screen
+            if let Some(model) = app.downloads.get(app.downloads_cursor) {
+                let resolved = resolve_hf_cache_path(&model.model_id);
+                app.adapter_list = scan_adapters(&resolved);
+                app.adapter_cursor = 0;
             }
+            app.screen = Screen::ModelDetail;
+            if app.adapter_list.is_empty() {
+                app.status = Status::neutral("Model details.");
+            } else {
+                app.status = Status::success(format!(
+                    "{} adapter{} found. Enter · merge & export   f · fine-tune new",
+                    app.adapter_list.len(),
+                    if app.adapter_list.len() == 1 { "" } else { "s" }
+                ));
+            }
+        }
+        (Char('c'), KeyModifiers::NONE) => {
+            app.clone_repo_id.clear();
+            app.clone_repo_status = None;
+            app.clone_base_cursor = 0;
+            app.clone_repo_checking = false;
+            app.clone_progress = None;
+            app.screen = Screen::CloneRepo;
+            app.status = Status::neutral("Enter a HuggingFace repo ID to check.");
         }
         (Char('/'), KeyModifiers::NONE) => {
             app.hf_search_active = true;
@@ -933,26 +1105,119 @@ fn handle_key_downloads(
     }
 }
 
-fn handle_key_model_detail(app: &mut App, key: crossterm::event::KeyEvent) {
+fn handle_key_model_detail(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    _tx: mpsc::UnboundedSender<AuthEvent>,
+) {
     use KeyCode::*;
 
     match (key.code, key.modifiers) {
         (Esc, _) => {
             app.screen = Screen::Downloads;
+            app.adapter_list.clear();
+            app.adapter_cursor = 0;
             app.status = Status::neutral("Back to models.");
         }
         (Char('c'), KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
+        // Navigate adapter list
+        (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+            app.adapter_cursor = app.adapter_cursor.saturating_sub(1);
+        }
+        (Down, _) | (Char('j'), KeyModifiers::NONE)
+            if !app.adapter_list.is_empty() && app.adapter_cursor + 1 < app.adapter_list.len() =>
+        {
+            app.adapter_cursor += 1;
+        }
+        // Enter on a GGUF artifact — open GGUF detail screen
+        (Enter, _)
+            if app
+                .adapter_list
+                .get(app.adapter_cursor)
+                .is_some_and(|a| a.kind == ArtifactKind::Gguf) =>
+        {
+            if let Some(entry) = app.adapter_list.get(app.adapter_cursor) {
+                // Use the project repo ID when available (e.g. "ondeinference/rumi"),
+                // otherwise derive from the base model name.
+                app.upload_repo_name = if let Some(ref project) = app.current_project {
+                    project.repo_id.clone()
+                } else {
+                    let base_name = app
+                        .downloads
+                        .get(app.downloads_cursor)
+                        .map(|m| m.model_id.replace('/', "-"))
+                        .unwrap_or_else(|| "finetuned-model".to_string());
+                    let stem = entry
+                        .file_name
+                        .strip_suffix(".gguf")
+                        .unwrap_or(&entry.file_name);
+                    format!("ondeinference/{base_name}-{stem}")
+                };
+                app.selected_gguf = Some(entry.clone());
+                app.upload_progress = None;
+                app.upload_running = false;
+                app.screen = Screen::GgufDetail;
+                app.status = Status::neutral("GGUF model details. u · upload to HuggingFace");
+            }
+        }
+        // Enter or 'm' — merge the selected LoRA adapter (skip fine-tuning)
+        (Enter, _) | (Char('m'), KeyModifiers::NONE)
+            if app
+                .adapter_list
+                .get(app.adapter_cursor)
+                .is_some_and(|a| a.kind == ArtifactKind::LoraAdapter) =>
+        {
+            if let Some(adapter) = app.adapter_list.get(app.adapter_cursor) {
+                if let Some(model) = app.downloads.get(app.downloads_cursor) {
+                    let resolved = resolve_hf_cache_path(&model.model_id);
+                    if resolved.is_empty() {
+                        app.status = Status::error("Model not downloaded locally.");
+                        return;
+                    }
+
+                    let adapter_path = adapter.path.clone();
+                    app.finetune_model_id = model.model_id.clone();
+                    app.finetune_model_dir = resolved.clone();
+
+                    // Set finetune_progress to Done so the FineTune screen
+                    // shows the post-training view with merge/export actions.
+                    app.finetune_progress = Some(crate::finetune::FineTuneProgress::Done {
+                        adapter_path: adapter_path.clone(),
+                    });
+                    app.finetune_running = false;
+                    app.merge_progress = None;
+                    app.gguf_progress = None;
+                    app.merged_model_dir = None;
+                    app.screen = Screen::FineTune;
+                    app.status =
+                        Status::neutral("Adapter selected. Press m to merge, Esc to go back.");
+                }
+            } else {
+                app.status = Status::error("No adapter selected.");
+            }
+        }
         (Char('f'), KeyModifiers::NONE) => {
             if let Some(model) = app.downloads.get(app.downloads_cursor) {
-                app.finetune_model_id = model.model_id.clone();
-                app.finetune_model_dir = resolve_hf_cache_path(&model.model_id);
-                app.finetune_focus = FineTuneFocus::DataPath;
-                app.finetune_running = false;
-                app.finetune_progress = None;
-                app.screen = Screen::FineTune;
-                app.status = Status::neutral("Configure fine-tuning.");
+                let resolved = resolve_hf_cache_path(&model.model_id);
+                if resolved.is_empty() {
+                    app.status = Status::error("Model not downloaded locally.");
+                } else if !std::path::Path::new(&resolved).join("config.json").exists() {
+                    app.status = Status::error(
+                        "Fine-tuning requires a safetensors model (GGUF not supported).",
+                    );
+                } else {
+                    app.finetune_model_id = model.model_id.clone();
+                    app.finetune_model_dir = resolved;
+                    app.finetune_data_path = finetune_data_path_for_model(&model.model_id);
+                    app.current_project = None; // no project context from model detail
+                    app.finetune_focus = FineTuneFocus::DataPath;
+                    app.finetune_running = false;
+                    app.finetune_progress = None;
+                    app.screen = Screen::FineTune;
+                    app.status = Status::neutral("Configure fine-tuning.");
+                }
             }
         }
         _ => {}
@@ -994,17 +1259,246 @@ fn resolve_hf_cache_path(model_id: &str) -> String {
     for hub in candidates {
         let snapshots_dir = hub.join(&dir_name).join("snapshots");
         if let Ok(entries) = std::fs::read_dir(&snapshots_dir) {
-            // Pick the first (usually only) snapshot hash directory
+            // Pick the first directory that looks like a commit hash (hex string).
+            // This skips non-hash dirs like "lora-adapter" that fine-tuning creates.
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.is_dir() {
-                    return p.to_string_lossy().to_string();
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.len() >= 7 && name.chars().all(|c| c.is_ascii_hexdigit()) {
+                        return p.to_string_lossy().to_string();
+                    }
                 }
             }
         }
     }
 
     String::new()
+}
+
+/// Scan for existing `lora_adapter.safetensors` files and `.gguf` exports under
+/// the model's snapshots directory. Returns entries sorted by modification time
+/// (newest first).
+fn scan_adapters(model_dir: &str) -> Vec<AdapterEntry> {
+    if model_dir.is_empty() {
+        return Vec::new();
+    }
+    let snapshots_dir = std::path::Path::new(model_dir)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+
+    let mut artifacts: Vec<AdapterEntry> = Vec::new();
+
+    let Ok(entries) = std::fs::read_dir(snapshots_dir) else {
+        return artifacts;
+    };
+
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let dir_name = entry.file_name().to_string_lossy().to_string();
+
+        // Check for LoRA adapter
+        let adapter_file = dir.join("lora_adapter.safetensors");
+        if adapter_file.exists()
+            && let Some(ae) = make_artifact_entry(
+                &adapter_file,
+                &dir_name,
+                "lora_adapter.safetensors",
+                ArtifactKind::LoraAdapter,
+            )
+        {
+            artifacts.push(ae);
+        }
+
+        // Check for any .gguf files in this subdirectory
+        if let Ok(sub_entries) = std::fs::read_dir(&dir) {
+            for sub in sub_entries.flatten() {
+                let fname = sub.file_name().to_string_lossy().to_string();
+                if fname.ends_with(".gguf")
+                    && let Some(ae) =
+                        make_artifact_entry(&sub.path(), &dir_name, &fname, ArtifactKind::Gguf)
+                {
+                    artifacts.push(ae);
+                }
+            }
+        }
+    }
+
+    // Also check the snapshots parent directory itself for .gguf files
+    // (GGUF export writes to e.g. .../snapshots/model-finetuned-q8_0.gguf)
+    if let Ok(parent_entries) = std::fs::read_dir(snapshots_dir) {
+        for entry in parent_entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if fname.ends_with(".gguf")
+                    && let Some(ae) =
+                        make_artifact_entry(&path, "snapshots", &fname, ArtifactKind::Gguf)
+                {
+                    artifacts.push(ae);
+                }
+            }
+        }
+    }
+
+    // Sort newest first
+    artifacts.sort_by(|a, b| {
+        let ma = std::fs::metadata(&a.path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let mb = std::fs::metadata(&b.path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        mb.cmp(&ma)
+    });
+
+    artifacts
+}
+
+fn make_artifact_entry(
+    path: &std::path::Path,
+    dir_name: &str,
+    file_name: &str,
+    kind: ArtifactKind,
+) -> Option<AdapterEntry> {
+    let meta = std::fs::metadata(path).ok()?;
+    let size = format_adapter_size(meta.len());
+    let modified = meta
+        .modified()
+        .ok()
+        .map(|t| {
+            let elapsed = t.elapsed().unwrap_or_default();
+            let secs = elapsed.as_secs();
+            if secs < 60 {
+                "just now".to_string()
+            } else if secs < 3600 {
+                format!("{}m ago", secs / 60)
+            } else if secs < 86400 {
+                format!("{}h ago", secs / 3600)
+            } else {
+                format!("{}d ago", secs / 86400)
+            }
+        })
+        .unwrap_or_else(|| "–".to_string());
+    Some(AdapterEntry {
+        path: path.to_path_buf(),
+        dir_name: dir_name.to_string(),
+        file_name: file_name.to_string(),
+        size,
+        modified,
+        kind,
+    })
+}
+
+fn handle_key_gguf_detail(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    // While uploading, only allow Ctrl+C
+    if app.upload_running {
+        if matches!(
+            (key.code, key.modifiers),
+            (Char('c'), KeyModifiers::CONTROL)
+        ) {
+            app.should_quit = true;
+        }
+        return;
+    }
+
+    // If upload is done or failed, Esc goes back; otherwise show result
+    if let Some(crate::hf_upload::UploadProgress::Done { ref url }) = app.upload_progress {
+        let url_owned = url.clone();
+        match (key.code, key.modifiers) {
+            (Esc, _) => {
+                app.screen = Screen::ModelDetail;
+                app.selected_gguf = None;
+                app.upload_progress = None;
+                app.status = Status::success(format!("Uploaded: {url_owned}"));
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match (key.code, key.modifiers) {
+        (Esc, _) => {
+            app.screen = Screen::ModelDetail;
+            app.selected_gguf = None;
+            app.upload_progress = None;
+            app.status = Status::neutral("Back to model.");
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        // Edit the repo name field
+        (Backspace, _) => {
+            app.upload_repo_name.pop();
+        }
+        // Enter — start the upload
+        (Enter, _) => {
+            if app.upload_repo_name.is_empty() {
+                app.status = Status::error("Repo name cannot be empty.");
+                return;
+            }
+            let token = HF_TOKEN.to_string();
+            if token.is_empty() {
+                app.status = Status::error("No HF_TOKEN set. Add it to .env and rebuild.");
+                return;
+            }
+            let Some(ref gguf) = app.selected_gguf else {
+                app.status = Status::error("No GGUF file selected.");
+                return;
+            };
+
+            let config = crate::hf_upload::UploadConfig {
+                file_path: gguf.path.clone(),
+                repo_id: app.upload_repo_name.clone(),
+                path_in_repo: gguf.file_name.clone(),
+                hf_token: token,
+                commit_message: format!("Upload fine-tuned GGUF: {}", gguf.file_name),
+            };
+
+            app.upload_running = true;
+            app.upload_progress = None;
+            app.status = Status::neutral("Uploading to HuggingFace…");
+
+            let (upload_tx, mut upload_rx) = mpsc::unbounded_channel();
+            let auth_tx = tx.clone();
+            tokio::spawn(async move {
+                crate::hf_upload::start_upload(config, upload_tx).await;
+            });
+            tokio::spawn(async move {
+                while let Some(progress) = upload_rx.recv().await {
+                    let _ = auth_tx.send(AuthEvent::UploadProgress(progress));
+                }
+            });
+        }
+        // Any printable char edits the repo name
+        (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            app.upload_repo_name.push(c);
+        }
+        _ => {}
+    }
+}
+
+fn format_adapter_size(bytes: u64) -> String {
+    if bytes >= 1_000_000_000 {
+        format!("{:.1}GB", bytes as f64 / 1e9)
+    } else if bytes >= 1_000_000 {
+        format!("{:.0}MB", bytes as f64 / 1e6)
+    } else {
+        format!("{:.0}KB", bytes as f64 / 1e3)
+    }
 }
 
 fn handle_key_finetune(
@@ -1014,7 +1508,8 @@ fn handle_key_finetune(
 ) {
     use KeyCode::*;
 
-    if app.finetune_running {
+    // While any background task is running, only allow Ctrl+C
+    if app.finetune_running || app.merge_running || app.gguf_running {
         if matches!(
             (key.code, key.modifiers),
             (Char('c'), KeyModifiers::CONTROL)
@@ -1022,6 +1517,112 @@ fn handle_key_finetune(
             app.should_quit = true;
         }
         return;
+    }
+
+    // After fine-tune is done: handle merge (m) and GGUF export (g)
+    if let Some(crate::finetune::FineTuneProgress::Done { adapter_path }) = &app.finetune_progress {
+        match (key.code, key.modifiers) {
+            (Char('m'), KeyModifiers::NONE) => {
+                // Start merge: adapter into base model
+                let base_dir = std::path::PathBuf::from({
+                    let raw = &app.finetune_model_dir;
+                    dirs::home_dir()
+                        .and_then(|home| {
+                            raw.strip_prefix("~/")
+                                .map(|rest| home.join(rest).to_string_lossy().to_string())
+                        })
+                        .unwrap_or_else(|| raw.to_string())
+                });
+                // Derive a timestamped merge dir from the adapter dir name.
+                // Put the merged model in a `merged/` subdir next to the adapter
+                let output_dir = adapter_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("merged");
+
+                let merge_config = crate::merge::MergeConfig {
+                    base_dir,
+                    adapter_path: adapter_path.clone(),
+                    output_dir,
+                };
+
+                app.merge_running = true;
+                app.merge_progress = None;
+                app.status = Status::neutral("Merging adapter…");
+
+                let (merge_tx, mut merge_rx) = mpsc::unbounded_channel();
+                crate::merge::start_merge(merge_config, merge_tx);
+
+                let auth_tx = tx.clone();
+                tokio::spawn(async move {
+                    while let Some(progress) = merge_rx.recv().await {
+                        let _ = auth_tx.send(AuthEvent::MergeProgress(progress));
+                    }
+                });
+                return;
+            }
+            (Char('g'), KeyModifiers::NONE) if app.merged_model_dir.is_some() => {
+                // Start GGUF export from merged model
+                let model_dir = app.merged_model_dir.clone().unwrap_or_default();
+                // Derive GGUF filename from the merged dir name for traceability.
+                // Place the GGUF in the run dir (parent of merged/).
+                let run_dir = model_dir.parent().unwrap_or(&model_dir);
+                let gguf_name = app
+                    .current_project
+                    .as_ref()
+                    .map(|p| {
+                        p.repo_id
+                            .split('/')
+                            .next_back()
+                            .unwrap_or("model")
+                            .to_string()
+                    })
+                    .unwrap_or_else(|| {
+                        // Use the base model short name for traceability
+                        app.finetune_model_id
+                            .split('/')
+                            .next_back()
+                            .unwrap_or("model-finetuned")
+                            .to_string()
+                    });
+                let output_path = run_dir.join(format!("{gguf_name}-q8_0.gguf"));
+
+                let gguf_config = crate::gguf::GgufConfig {
+                    model_dir,
+                    output_path,
+                    dtype: crate::gguf::GgufDtype::Q8_0,
+                };
+
+                app.gguf_running = true;
+                app.gguf_progress = None;
+                app.status = Status::neutral("Exporting GGUF…");
+
+                let (gguf_tx, mut gguf_rx) = mpsc::unbounded_channel();
+                crate::gguf::start_gguf_export(gguf_config, gguf_tx);
+
+                let auth_tx = tx.clone();
+                tokio::spawn(async move {
+                    while let Some(progress) = gguf_rx.recv().await {
+                        let _ = auth_tx.send(AuthEvent::GgufProgress(progress));
+                    }
+                });
+                return;
+            }
+            (Esc, _) => {
+                app.screen = Screen::ModelDetail;
+                app.finetune_progress = None;
+                app.merge_progress = None;
+                app.gguf_progress = None;
+                app.merged_model_dir = None;
+                app.status = Status::neutral("Back to model.");
+                return;
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+                return;
+            }
+            _ => return,
+        }
     }
 
     match (key.code, key.modifiers) {
@@ -1054,24 +1655,37 @@ fn handle_key_finetune(
         (Enter, _) => {
             let rank: usize = app.finetune_rank.parse().unwrap_or(8);
             let epochs: usize = app.finetune_epochs.parse().unwrap_or(3);
-            let lr: f64 = app.finetune_lr.parse().unwrap_or(0.0001);
+            let lr: f64 = app.finetune_lr.parse().unwrap_or(0.00001);
 
             // Expand ~ in paths
             let expand = |s: &str| -> String {
-                if let Some(rest) = s.strip_prefix("~/") {
-                    if let Some(home) = dirs::home_dir() {
-                        return home.join(rest).to_string_lossy().to_string();
-                    }
-                }
-                s.to_string()
+                dirs::home_dir()
+                    .and_then(|home| {
+                        s.strip_prefix("~/")
+                            .map(|rest| home.join(rest).to_string_lossy().to_string())
+                    })
+                    .unwrap_or_else(|| s.to_string())
             };
 
             let model_dir = std::path::PathBuf::from(expand(&app.finetune_model_dir));
             let data_path = std::path::PathBuf::from(expand(&app.finetune_data_path));
-            let output_dir = model_dir
-                .parent()
-                .unwrap_or(&model_dir)
-                .join("lora-adapter");
+            // Use the project's run directory if available, otherwise fall back
+            // to a timestamped dir next to the model.
+            let output_dir = if let Some(ref project) = app.current_project {
+                match crate::project::new_run_dir(project) {
+                    Ok(run_dir) => run_dir,
+                    Err(e) => {
+                        app.status = Status::error(format!("Failed to create run dir: {e}"));
+                        return;
+                    }
+                }
+            } else {
+                let ts = run_timestamp();
+                model_dir
+                    .parent()
+                    .unwrap_or(&model_dir)
+                    .join(format!("lora-{ts}"))
+            };
 
             let config = crate::finetune::FineTuneConfig {
                 model_dir,
@@ -1124,6 +1738,264 @@ fn handle_key_finetune(
         },
         _ => {}
     }
+}
+
+fn handle_key_clone_repo(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    // While checking, only allow quit.
+    if app.clone_repo_checking {
+        if matches!(
+            (key.code, key.modifiers),
+            (Char('c'), KeyModifiers::CONTROL)
+        ) {
+            app.should_quit = true;
+        }
+        return;
+    }
+
+    // If repo is empty or not found + created → show base model picker
+    let is_picking_base = matches!(
+        &app.clone_repo_status,
+        Some(crate::hf_clone::RepoStatus::Empty { .. })
+    );
+
+    if is_picking_base {
+        match (key.code, key.modifiers) {
+            (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+                app.clone_base_cursor = app.clone_base_cursor.saturating_sub(1);
+            }
+            (Down, _) | (Char('j'), KeyModifiers::NONE)
+                if app.clone_base_cursor + 1 < crate::hf_clone::BASE_MODELS.len() =>
+            {
+                app.clone_base_cursor += 1;
+            }
+            (Enter, _) => {
+                // User selected a base model — download it then go to fine-tune
+                let base = &crate::hf_clone::BASE_MODELS[app.clone_base_cursor];
+                let base_repo_id = base.repo_id.to_string();
+
+                // Check if the base model is already downloaded locally
+                let resolved = resolve_hf_cache_path(&base_repo_id);
+                if !resolved.is_empty()
+                    && std::path::Path::new(&resolved).join("config.json").exists()
+                {
+                    // Create (or load) the project workspace for this repo
+                    let target_repo = app.clone_repo_id.clone();
+                    match crate::project::create_project(&target_repo, &base_repo_id) {
+                        Ok(mut project) => {
+                            project.base_model_dir = resolved.clone();
+                            let dataset_display =
+                                project.dataset_path.to_string_lossy().to_string();
+                            // Try to shorten the display path with ~/
+                            let dataset_display = if let Some(home) = dirs::home_dir() {
+                                let home_str = home.to_string_lossy();
+                                if dataset_display.starts_with(home_str.as_ref()) {
+                                    format!("~{}", &dataset_display[home_str.len()..])
+                                } else {
+                                    dataset_display
+                                }
+                            } else {
+                                dataset_display
+                            };
+                            app.finetune_data_path = dataset_display;
+                            app.finetune_model_id = base_repo_id;
+                            app.finetune_model_dir = resolved;
+                            app.current_project = Some(project);
+                            app.finetune_focus = FineTuneFocus::DataPath;
+                            app.finetune_running = false;
+                            app.finetune_progress = None;
+                            app.screen = Screen::FineTune;
+                            app.status = Status::neutral("Project ready. Configure fine-tuning.");
+                        }
+                        Err(e) => {
+                            app.status = Status::error(format!("Failed to create project: {e}"));
+                        }
+                    }
+                    return;
+                }
+
+                // Not downloaded — trigger download via the existing HF search download flow
+                let hub = crate::hf::preferred_download_hub();
+                app.downloading = true;
+                app.download_progress = None;
+                app.status =
+                    Status::neutral(format!("Downloading base model {}…", base.display_name));
+
+                // Switch to Downloads screen to show progress
+                app.screen = Screen::Downloads;
+
+                let (dl_tx, mut dl_rx) =
+                    mpsc::unbounded_channel::<crate::hf_search::DownloadEvent>();
+
+                let model_id_for_download = base_repo_id.clone();
+                tokio::spawn(async move {
+                    crate::hf_search::download_model(model_id_for_download, hub, dl_tx).await;
+                });
+
+                let auth_tx = tx.clone();
+                let model_id_for_event = base_repo_id;
+                tokio::spawn(async move {
+                    while let Some(event) = dl_rx.recv().await {
+                        match event {
+                            crate::hf_search::DownloadEvent::Progress(p) => {
+                                let _ = auth_tx.send(AuthEvent::ModelDownloadProgress(p));
+                            }
+                            crate::hf_search::DownloadEvent::Complete => {
+                                let _ = auth_tx.send(AuthEvent::ModelDownloadComplete(
+                                    model_id_for_event.clone(),
+                                ));
+                                break;
+                            }
+                            crate::hf_search::DownloadEvent::Failed(e) => {
+                                let _ = auth_tx.send(AuthEvent::ModelDownloadFailed(e));
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+            (Esc, _) => {
+                // Go back to repo name input
+                app.clone_repo_status = None;
+                app.clone_base_cursor = 0;
+                app.status = Status::neutral("Enter a HuggingFace repo ID.");
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // If repo has model files, show a note and allow going back
+    if matches!(
+        &app.clone_repo_status,
+        Some(crate::hf_clone::RepoStatus::HasModel { .. })
+    ) {
+        match (key.code, key.modifiers) {
+            (Esc, _) => {
+                app.clone_repo_status = None;
+                app.status = Status::neutral("Enter a HuggingFace repo ID.");
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // Repo status is NotFound — allow creating it with Enter
+    if matches!(
+        &app.clone_repo_status,
+        Some(crate::hf_clone::RepoStatus::NotFound)
+    ) {
+        match (key.code, key.modifiers) {
+            (Enter, _) => {
+                let token = HF_TOKEN.to_string();
+                if token.is_empty() {
+                    app.status = Status::error("No HF_TOKEN set. Add it to .env and rebuild.");
+                    return;
+                }
+                let repo_id = app.clone_repo_id.clone();
+                app.clone_repo_checking = true;
+                app.status = Status::neutral("Creating repo…");
+
+                let (clone_tx, mut clone_rx) = mpsc::unbounded_channel();
+                let auth_tx = tx.clone();
+                tokio::spawn(async move {
+                    crate::hf_clone::start_create_repo(repo_id, token, clone_tx).await;
+                });
+                tokio::spawn(async move {
+                    while let Some(progress) = clone_rx.recv().await {
+                        let _ = auth_tx.send(AuthEvent::CloneProgress(progress));
+                    }
+                });
+            }
+            (Esc, _) => {
+                app.clone_repo_status = None;
+                app.status = Status::neutral("Enter a HuggingFace repo ID.");
+            }
+            (Char('c'), KeyModifiers::CONTROL) => {
+                app.should_quit = true;
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    // Default: repo name input mode
+    match (key.code, key.modifiers) {
+        (Enter, _) => {
+            if app.clone_repo_id.trim().is_empty() {
+                app.status = Status::error("Repo ID cannot be empty.");
+                return;
+            }
+            let token = HF_TOKEN.to_string();
+            let repo_id = app.clone_repo_id.clone();
+            app.clone_repo_checking = true;
+            app.clone_repo_status = None;
+            app.status = Status::neutral(format!("Checking {}…", repo_id));
+
+            let (clone_tx, mut clone_rx) = mpsc::unbounded_channel();
+            let auth_tx = tx.clone();
+            tokio::spawn(async move {
+                crate::hf_clone::start_check_repo(repo_id, token, clone_tx).await;
+            });
+            tokio::spawn(async move {
+                while let Some(progress) = clone_rx.recv().await {
+                    let _ = auth_tx.send(AuthEvent::CloneProgress(progress));
+                }
+            });
+        }
+        (Backspace, _) => {
+            app.clone_repo_id.pop();
+        }
+        (Esc, _) => {
+            app.screen = Screen::Downloads;
+            app.clone_repo_id.clear();
+            app.clone_repo_status = None;
+            app.clone_base_cursor = 0;
+            app.status = Status::neutral("Back to models.");
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            // Typing clears any previous check result
+            if app.clone_repo_status.is_some() {
+                app.clone_repo_status = None;
+            }
+            app.clone_repo_id.push(c);
+        }
+        _ => {}
+    }
+}
+
+/// Generate a compact timestamp for unique artifact naming.
+///
+/// Uses Unix epoch seconds for simplicity — produces values like `1750012345`
+/// which are unique, monotonic, and filesystem-safe.
+fn run_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{secs}")
+}
+
+/// Derive a per-project dataset path from a model ID.
+///
+/// Converts `org/model-name` → `~/.onde/datasets/org/model-name/train.jsonl`
+/// so each fine-tuning project has its own dataset folder.
+fn finetune_data_path_for_model(model_id: &str) -> String {
+    format!("~/.onde/datasets/{}/train.jsonl", model_id)
 }
 
 fn trigger_hf_search(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {

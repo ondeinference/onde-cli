@@ -1,5 +1,5 @@
 use {
-    crate::app::{App, FineTuneFocus, Focus, Mode, OndeApp, Screen, StatusTone},
+    crate::app::{App, ArtifactKind, FineTuneFocus, Focus, Mode, OndeApp, Screen, StatusTone},
     crate::hf::CacheSource,
     ratatui::{
         Frame,
@@ -84,7 +84,9 @@ fn render_card(frame: &mut Frame, app: &App, area: Rect) {
         Screen::Models => render_models(frame, app, inner),
         Screen::Downloads => render_downloads(frame, app, inner),
         Screen::ModelDetail => render_model_detail(frame, app, inner),
+        Screen::GgufDetail => render_gguf_detail(frame, app, inner),
         Screen::FineTune => render_finetune(frame, app, inner),
+        Screen::CloneRepo => render_clone_repo(frame, app, inner),
     }
 }
 
@@ -1041,8 +1043,10 @@ fn render_model_detail(frame: &mut Frame, app: &App, area: Rect) {
         Constraint::Length(1), // 23 Catalog ID value
         Constraint::Length(1), // 24 spacer
         Constraint::Length(1), // 25 Description label
-        Constraint::Min(0),    // 26 Description value (wraps)
-        Constraint::Length(1), // 27 hint
+        Constraint::Length(1), // 26 Description value
+        Constraint::Length(1), // 27 spacer
+        Constraint::Length(1), // 28 Adapters heading
+        Constraint::Min(0),    // 29 Adapters list
     ])
     .split(area);
 
@@ -1085,10 +1089,307 @@ fn render_model_detail(frame: &mut Frame, app: &App, area: Rect) {
         rows[26],
     );
 
+    // Artifacts section (adapters + exported GGUFs)
+    let adapter_heading = if app.adapter_list.is_empty() {
+        "Artifacts"
+    } else {
+        "Artifacts  (↑↓ select · Enter merge & export)"
+    };
     frame.render_widget(
-        Paragraph::new("Esc · back to models").style(Style::new().fg(C_MUTED)),
-        rows[27],
+        Paragraph::new(adapter_heading).style(Style::new().fg(C_MUTED)),
+        rows[28],
     );
+    render_model_detail_adapters(frame, app, rows[29]);
+}
+
+/// Render the selectable artifact list inside the Model Detail screen.
+fn render_model_detail_adapters(frame: &mut Frame, app: &App, area: Rect) {
+    if app.adapter_list.is_empty() {
+        frame.render_widget(
+            Paragraph::new("  No artifacts found. Press f to fine-tune.")
+                .style(Style::new().fg(C_MUTED)),
+            area,
+        );
+        return;
+    }
+
+    let max_rows = area.height as usize;
+    for (i, adapter) in app.adapter_list.iter().enumerate().take(max_rows) {
+        let row_y = area.y + i as u16;
+        let row_area = Rect::new(area.x, row_y, area.width, 1);
+
+        let is_selected = i == app.adapter_cursor;
+        let marker = if is_selected { "▸ " } else { "  " };
+        let marker_style = if is_selected {
+            Style::new().fg(C_NEON).bold()
+        } else {
+            Style::new().fg(C_NEON)
+        };
+        let name_style = if is_selected {
+            Style::new().fg(C_TEXT).bold()
+        } else {
+            Style::new().fg(C_TEXT)
+        };
+        let meta_style = Style::new().fg(C_MUTED);
+
+        // Kind badge + icon
+        let (kind_icon, kind_label) = match adapter.kind {
+            ArtifactKind::LoraAdapter => ("◆ ", "LoRA"),
+            ArtifactKind::Gguf => ("● ", "GGUF"),
+        };
+        let kind_color = match adapter.kind {
+            ArtifactKind::LoraAdapter => C_NEON,
+            ArtifactKind::Gguf => Color::Rgb(100, 200, 255),
+        };
+
+        // Show file_name for GGUF, dir_name for LoRA
+        let display_name = match adapter.kind {
+            ArtifactKind::Gguf => &adapter.file_name,
+            ArtifactKind::LoraAdapter => &adapter.dir_name,
+        };
+        let name_truncated = if display_name.len() > 28 {
+            format!("{}…", &display_name[..27])
+        } else {
+            display_name.clone()
+        };
+
+        let line = Line::from(vec![
+            Span::styled(marker, marker_style),
+            Span::styled(kind_icon, Style::new().fg(kind_color)),
+            Span::styled(format!("{:<6}", kind_label), Style::new().fg(kind_color)),
+            Span::styled(format!("{:<30}", name_truncated), name_style),
+            Span::styled(format!("{:<10}", adapter.size), meta_style),
+            Span::styled(&adapter.modified, meta_style),
+        ]);
+
+        if is_selected {
+            frame.render_widget(
+                Paragraph::new(line).style(Style::new().bg(C_SURFACE_STRONG)),
+                row_area,
+            );
+        } else {
+            frame.render_widget(Paragraph::new(line), row_area);
+        }
+    }
+}
+
+fn render_gguf_detail(frame: &mut Frame, app: &App, area: Rect) {
+    let Some(ref gguf) = app.selected_gguf else {
+        return;
+    };
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // 0  heading
+        Constraint::Length(1), // 1  spacer
+        Constraint::Length(1), // 2  status
+        Constraint::Length(1), // 3  spacer
+        Constraint::Length(1), // 4  File label
+        Constraint::Length(1), // 5  File value
+        Constraint::Length(1), // 6  spacer
+        Constraint::Length(1), // 7  Size label
+        Constraint::Length(1), // 8  Size value
+        Constraint::Length(1), // 9  spacer
+        Constraint::Length(1), // 10 Location label
+        Constraint::Length(3), // 11 Location value (bordered, wraps)
+        Constraint::Length(1), // 12 spacer
+        Constraint::Length(1), // 13 Upload heading
+        Constraint::Length(1), // 14 Repo Name label
+        Constraint::Length(3), // 15 Repo Name input
+        Constraint::Length(1), // 16 spacer
+        Constraint::Length(1), // 17 upload status / progress
+        Constraint::Length(1), // 18 spacer
+        Constraint::Min(0),    // 19 rest
+        Constraint::Length(1), // 20 hint
+    ])
+    .split(area);
+
+    // Heading
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("GGUF Model — {}", gguf.file_name),
+            Style::new().fg(C_INK).bold(),
+        ))),
+        rows[0],
+    );
+
+    render_status(frame, app, rows[2]);
+
+    // File name
+    render_detail_field(frame, "File", &gguf.file_name, rows[4], rows[5]);
+
+    // Size + modified
+    let size_modified = format!("{}   {}", gguf.size, gguf.modified);
+    render_detail_field(frame, "Size", &size_modified, rows[7], rows[8]);
+
+    // Full path in a bordered box
+    frame.render_widget(
+        Paragraph::new("Location").style(Style::new().fg(C_MUTED)),
+        rows[10],
+    );
+    let path_block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(C_LINE))
+        .style(Style::new().bg(C_SURFACE_STRONG));
+    let path_inner = path_block.inner(rows[11]);
+    frame.render_widget(path_block, rows[11]);
+    frame.render_widget(
+        Paragraph::new(gguf.path.to_string_lossy().to_string())
+            .style(Style::new().fg(C_NEON))
+            .wrap(Wrap { trim: true }),
+        path_inner,
+    );
+
+    // Upload section
+    frame.render_widget(
+        Paragraph::new("Upload to HuggingFace").style(Style::new().fg(C_MUTED)),
+        rows[13],
+    );
+
+    // Repo name input
+    frame.render_widget(
+        Paragraph::new("Repo Name").style(Style::new().fg(C_MUTED)),
+        rows[14],
+    );
+
+    let input_focused = !app.upload_running
+        && !matches!(
+            app.upload_progress,
+            Some(crate::hf_upload::UploadProgress::Done { .. })
+        );
+    let border_style = if input_focused {
+        Style::new().fg(C_NEON)
+    } else {
+        Style::new().fg(C_LINE)
+    };
+    let input_block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .style(Style::new().bg(C_SURFACE_STRONG));
+    let input_inner = input_block.inner(rows[15]);
+    frame.render_widget(input_block, rows[15]);
+    frame.render_widget(
+        Paragraph::new(app.upload_repo_name.as_str()).style(Style::new().fg(C_TEXT)),
+        input_inner,
+    );
+    if input_focused {
+        let cursor_x = (input_inner.x + app.upload_repo_name.chars().count() as u16)
+            .min(input_inner.x + input_inner.width.saturating_sub(1));
+        frame.set_cursor_position((cursor_x, input_inner.y));
+    }
+
+    // Upload progress / status
+    render_upload_status(frame, app, rows[17]);
+
+    // Hint
+    let hint = if app.upload_running {
+        "Ctrl+C · quit"
+    } else if matches!(
+        app.upload_progress,
+        Some(crate::hf_upload::UploadProgress::Done { .. })
+    ) {
+        "Esc · back"
+    } else {
+        "Enter · upload    Esc · back"
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::new().fg(C_MUTED)),
+        rows[20],
+    );
+}
+
+fn render_upload_status(frame: &mut Frame, app: &App, area: Rect) {
+    match &app.upload_progress {
+        Some(crate::hf_upload::UploadProgress::CreatingRepo) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Creating repository…").style(Style::new().fg(C_MUTED)),
+                area,
+            );
+        }
+        Some(crate::hf_upload::UploadProgress::Hashing {
+            bytes_done,
+            bytes_total,
+        }) => {
+            let pct = if *bytes_total > 0 {
+                (*bytes_done as f64 / *bytes_total as f64 * 100.0) as u64
+            } else {
+                0
+            };
+            frame.render_widget(
+                Paragraph::new(format!("⠿ Hashing… {}%", pct)).style(Style::new().fg(C_MUTED)),
+                area,
+            );
+        }
+        Some(crate::hf_upload::UploadProgress::Committing) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Creating commit…").style(Style::new().fg(C_MUTED)),
+                area,
+            );
+        }
+        Some(crate::hf_upload::UploadProgress::Uploading {
+            bytes_sent,
+            bytes_total,
+        }) => {
+            let pct = if *bytes_total > 0 {
+                (*bytes_sent as f64 / *bytes_total as f64 * 100.0) as u64
+            } else {
+                0
+            };
+            let sent_str = fmt_bytes(*bytes_sent as i64);
+            let total_str = fmt_bytes(*bytes_total as i64);
+            let bar_width = area.width.saturating_sub(30) as usize;
+            let filled = if *bytes_total > 0 {
+                (*bytes_sent as f64 / *bytes_total as f64 * bar_width as f64) as usize
+            } else {
+                0
+            };
+            let empty = bar_width.saturating_sub(filled);
+            let bar = format!(
+                "{}{} {}/{}  {}%",
+                "█".repeat(filled),
+                "░".repeat(empty),
+                sent_str,
+                total_str,
+                pct
+            );
+            frame.render_widget(Paragraph::new(bar).style(Style::new().fg(C_NEON)), area);
+        }
+        Some(crate::hf_upload::UploadProgress::Done { url }) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✓ ", Style::new().fg(C_NEON)),
+                    Span::styled("Uploaded → ", Style::new().fg(C_NEON).bold()),
+                    Span::styled(url.as_str(), Style::new().fg(C_TEXT)),
+                ])),
+                area,
+            );
+        }
+        Some(crate::hf_upload::UploadProgress::Failed(msg)) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✗ Upload failed: ", Style::new().fg(C_DANGER).bold()),
+                    Span::styled(msg.as_str(), Style::new().fg(C_DANGER)),
+                ])),
+                area,
+            );
+        }
+        None => {
+            if crate::app::HF_TOKEN.is_empty() {
+                frame.render_widget(
+                    Paragraph::new("⚠ No HF_TOKEN in .env — upload disabled")
+                        .style(Style::new().fg(C_DANGER)),
+                    area,
+                );
+            } else {
+                frame.render_widget(
+                    Paragraph::new("Ready to upload. Press Enter to start.")
+                        .style(Style::new().fg(C_MUTED)),
+                    area,
+                );
+            }
+        }
+    }
 }
 
 fn fmt_bytes(bytes: i64) -> String {
@@ -1102,7 +1403,11 @@ fn fmt_bytes(bytes: i64) -> String {
 }
 
 fn render_finetune(frame: &mut Frame, app: &App, area: Rect) {
-    if app.finetune_running || app.finetune_progress.is_some() {
+    if app.finetune_running
+        || app.merge_running
+        || app.gguf_running
+        || app.finetune_progress.is_some()
+    {
         render_finetune_progress(frame, app, area);
     } else {
         render_finetune_form(frame, app, area);
@@ -1242,17 +1547,14 @@ fn render_finetune_input(frame: &mut Frame, value: &str, is_focused: bool, area:
 }
 
 fn render_finetune_progress(frame: &mut Frame, app: &App, area: Rect) {
-    let rows = Layout::vertical([
+    // Shared top: heading + status. The rest is state-dependent.
+    let top = Layout::vertical([
         Constraint::Length(1), // 0  heading
         Constraint::Length(1), // 1  spacer
         Constraint::Length(1), // 2  status
         Constraint::Length(1), // 3  spacer
-        Constraint::Length(1), // 4  progress label
-        Constraint::Length(1), // 5  progress detail
-        Constraint::Length(1), // 6  spacer
-        Constraint::Length(1), // 7  progress bar
-        Constraint::Min(0),    // 8  spacer
-        Constraint::Length(1), // 9  hint
+        Constraint::Min(0),    // 4  content (state-dependent)
+        Constraint::Length(1), // 5  hint
     ])
     .split(area);
 
@@ -1267,30 +1569,32 @@ fn render_finetune_progress(frame: &mut Frame, app: &App, area: Rect) {
             heading,
             Style::new().fg(C_INK).bold(),
         ))),
-        rows[0],
+        top[0],
     );
 
-    render_status(frame, app, rows[2]);
+    render_status(frame, app, top[2]);
+
+    let content = top[4];
 
     match &app.finetune_progress {
         Some(crate::finetune::FineTuneProgress::Validating) => {
             frame.render_widget(
                 Paragraph::new("⠿ Validating model and data files…")
                     .style(Style::new().fg(C_MUTED)),
-                rows[4],
+                content,
             );
         }
         Some(crate::finetune::FineTuneProgress::LoadingModel) => {
             frame.render_widget(
                 Paragraph::new("⠿ Loading model weights…").style(Style::new().fg(C_MUTED)),
-                rows[4],
+                content,
             );
         }
         Some(crate::finetune::FineTuneProgress::Tokenizing { done, total }) => {
             frame.render_widget(
                 Paragraph::new(format!("⠿ Tokenizing… {done}/{total}"))
                     .style(Style::new().fg(C_MUTED)),
-                rows[4],
+                content,
             );
         }
         Some(crate::finetune::FineTuneProgress::Training {
@@ -1300,76 +1604,519 @@ fn render_finetune_progress(frame: &mut Frame, app: &App, area: Rect) {
             total_steps,
             loss,
         }) => {
+            let rows = Layout::vertical([
+                Constraint::Length(1), // label
+                Constraint::Length(1), // detail
+                Constraint::Length(1), // spacer
+                Constraint::Length(1), // progress bar
+                Constraint::Min(0),    // rest
+            ])
+            .split(content);
+
             let detail =
                 format!("epoch {epoch}/{total_epochs}  step {step}/{total_steps}  loss {loss:.3}");
             frame.render_widget(
                 Paragraph::new("Training").style(Style::new().fg(C_NEON).bold()),
-                rows[4],
+                rows[0],
             );
             frame.render_widget(
                 Paragraph::new(detail).style(Style::new().fg(C_TEXT)),
-                rows[5],
+                rows[1],
             );
 
-            // Progress bar
             let progress = if *total_steps > 0 {
                 *step as f64 / *total_steps as f64
             } else {
                 0.0
             };
-            let bar_width = area.width.saturating_sub(4) as usize;
+            let bar_width = content.width.saturating_sub(4) as usize;
             let filled = (progress * bar_width as f64) as usize;
             let empty = bar_width.saturating_sub(filled);
             let bar = format!("{}{}", "█".repeat(filled), "░".repeat(empty));
-            frame.render_widget(Paragraph::new(bar).style(Style::new().fg(C_NEON)), rows[7]);
+            frame.render_widget(Paragraph::new(bar).style(Style::new().fg(C_NEON)), rows[3]);
         }
         Some(crate::finetune::FineTuneProgress::Saving) => {
             frame.render_widget(
                 Paragraph::new("⠿ Saving adapter weights…").style(Style::new().fg(C_MUTED)),
-                rows[4],
+                content,
             );
         }
         Some(crate::finetune::FineTuneProgress::Done { adapter_path }) => {
-            frame.render_widget(
-                Paragraph::new("✓ Done").style(Style::new().fg(C_NEON).bold()),
-                rows[4],
-            );
-            frame.render_widget(
-                Paragraph::new(adapter_path.to_string_lossy().to_string())
-                    .style(Style::new().fg(C_NEON)),
-                rows[5],
-            );
+            render_finetune_done(frame, app, adapter_path, content);
         }
         Some(crate::finetune::FineTuneProgress::Failed(msg)) => {
+            let rows = Layout::vertical([
+                Constraint::Length(1), // label
+                Constraint::Length(1), // spacer
+                Constraint::Min(0),    // error message (wraps)
+            ])
+            .split(content);
+
             frame.render_widget(
                 Paragraph::new("✗ Failed").style(Style::new().fg(C_DANGER).bold()),
-                rows[4],
+                rows[0],
             );
             frame.render_widget(
                 Paragraph::new(msg.as_str())
                     .style(Style::new().fg(C_DANGER))
                     .wrap(Wrap { trim: true }),
-                rows[5],
+                rows[2],
             );
         }
         None => {
             frame.render_widget(
                 Paragraph::new("⠿ Starting…").style(Style::new().fg(C_MUTED)),
-                rows[4],
+                content,
             );
         }
     }
 
     // Hint line
-    let hint = if app.finetune_running {
+    let hint = if app.finetune_running || app.merge_running || app.gguf_running {
         "Ctrl+C · quit"
     } else {
         "Esc · back"
     };
+    frame.render_widget(Paragraph::new(hint).style(Style::new().fg(C_MUTED)), top[5]);
+}
+
+/// Render the fine-tune "Done" state with full adapter details plus merge/export
+/// progress and action hints.
+fn render_finetune_done(frame: &mut Frame, app: &App, adapter_path: &std::path::Path, area: Rect) {
+    let rows = Layout::vertical([
+        Constraint::Length(1), // 0  ✓ label
+        Constraint::Length(1), // 1  spacer
+        Constraint::Length(1), // 2  "Adapter" label
+        Constraint::Length(3), // 3  path (wrapped in bordered box)
+        Constraint::Length(1), // 4  spacer
+        Constraint::Length(1), // 5  size
+        Constraint::Length(1), // 6  spacer
+        Constraint::Length(1), // 7  config heading
+        Constraint::Length(1), // 8  rank + epochs + lr
+        Constraint::Length(1), // 9  spacer
+        Constraint::Min(0),    // 10 merge/export section or adapters list
+    ])
+    .split(area);
+
+    // ✓ label
     frame.render_widget(
-        Paragraph::new(hint).style(Style::new().fg(C_MUTED)),
-        rows[9],
+        Paragraph::new(Line::from(vec![
+            Span::styled("✓ ", Style::new().fg(C_NEON)),
+            Span::styled("Fine-tuning complete", Style::new().fg(C_NEON).bold()),
+        ])),
+        rows[0],
     );
+
+    // Adapter path in a bordered box so it wraps visibly
+    frame.render_widget(
+        Paragraph::new("Adapter").style(Style::new().fg(C_MUTED)),
+        rows[2],
+    );
+    let path_block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(C_LINE))
+        .style(Style::new().bg(C_SURFACE_STRONG));
+    let path_inner = path_block.inner(rows[3]);
+    frame.render_widget(path_block, rows[3]);
+    frame.render_widget(
+        Paragraph::new(adapter_path.to_string_lossy().to_string())
+            .style(Style::new().fg(C_NEON))
+            .wrap(Wrap { trim: true }),
+        path_inner,
+    );
+
+    // File size
+    let size_str = std::fs::metadata(adapter_path)
+        .map(|m| fmt_bytes(m.len() as i64))
+        .unwrap_or_else(|_| "–".to_string());
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("Size  ", Style::new().fg(C_MUTED)),
+            Span::styled(size_str, Style::new().fg(C_TEXT).bold()),
+        ])),
+        rows[5],
+    );
+
+    // Training config
+    frame.render_widget(
+        Paragraph::new("Training Config").style(Style::new().fg(C_MUTED)),
+        rows[7],
+    );
+    let config_line = format!(
+        "rank {}   epochs {}   lr {}",
+        app.finetune_rank, app.finetune_epochs, app.finetune_lr
+    );
+    frame.render_widget(
+        Paragraph::new(config_line).style(Style::new().fg(C_TEXT)),
+        rows[8],
+    );
+
+    // Merge / GGUF export section
+    render_merge_gguf_section(frame, app, rows[10]);
+}
+
+/// Render merge progress, GGUF export progress, and available action hints.
+fn render_merge_gguf_section(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::vertical([
+        Constraint::Length(1), // 0  merge status
+        Constraint::Length(1), // 1  spacer
+        Constraint::Length(1), // 2  gguf status
+        Constraint::Length(1), // 3  spacer
+        Constraint::Length(1), // 4  action hints
+        Constraint::Length(1), // 5  spacer
+        Constraint::Length(1), // 6  adapters heading
+        Constraint::Min(0),    // 7  adapters list
+    ])
+    .split(area);
+
+    // --- Merge status ---
+    match &app.merge_progress {
+        Some(crate::merge::MergeProgress::Loading) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Loading model for merge…").style(Style::new().fg(C_MUTED)),
+                rows[0],
+            );
+        }
+        Some(crate::merge::MergeProgress::Merging { layer, total }) => {
+            frame.render_widget(
+                Paragraph::new(format!("⠿ Merging layer {layer}/{total}…"))
+                    .style(Style::new().fg(C_MUTED)),
+                rows[0],
+            );
+        }
+        Some(crate::merge::MergeProgress::Saving) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Saving merged model…").style(Style::new().fg(C_MUTED)),
+                rows[0],
+            );
+        }
+        Some(crate::merge::MergeProgress::Done { output_path }) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✓ ", Style::new().fg(C_NEON)),
+                    Span::styled("Merged → ", Style::new().fg(C_NEON).bold()),
+                    Span::styled(
+                        output_path.to_string_lossy().to_string(),
+                        Style::new().fg(C_TEXT),
+                    ),
+                ])),
+                rows[0],
+            );
+        }
+        Some(crate::merge::MergeProgress::Failed(msg)) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✗ Merge failed: ", Style::new().fg(C_DANGER).bold()),
+                    Span::styled(msg.as_str(), Style::new().fg(C_DANGER)),
+                ])),
+                rows[0],
+            );
+        }
+        None => {
+            frame.render_widget(
+                Paragraph::new("  Merge: not started").style(Style::new().fg(C_MUTED)),
+                rows[0],
+            );
+        }
+    }
+
+    // --- GGUF export status ---
+    match &app.gguf_progress {
+        Some(crate::gguf::GgufProgress::ReadingModel) => {
+            frame.render_widget(
+                Paragraph::new("⠿ Reading model for GGUF export…").style(Style::new().fg(C_MUTED)),
+                rows[2],
+            );
+        }
+        Some(crate::gguf::GgufProgress::WritingTensor { index, total, name }) => {
+            frame.render_widget(
+                Paragraph::new(format!("⠿ Writing tensor {index}/{total}  {name}"))
+                    .style(Style::new().fg(C_MUTED)),
+                rows[2],
+            );
+        }
+        Some(crate::gguf::GgufProgress::Done {
+            output_path,
+            size_bytes,
+        }) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✓ ", Style::new().fg(C_NEON)),
+                    Span::styled("GGUF → ", Style::new().fg(C_NEON).bold()),
+                    Span::styled(
+                        output_path.to_string_lossy().to_string(),
+                        Style::new().fg(C_TEXT),
+                    ),
+                    Span::styled(
+                        format!("  ({})", fmt_bytes(*size_bytes as i64)),
+                        Style::new().fg(C_MUTED),
+                    ),
+                ])),
+                rows[2],
+            );
+        }
+        Some(crate::gguf::GgufProgress::Failed(msg)) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✗ GGUF failed: ", Style::new().fg(C_DANGER).bold()),
+                    Span::styled(msg.as_str(), Style::new().fg(C_DANGER)),
+                ])),
+                rows[2],
+            );
+        }
+        None => {
+            if app.merged_model_dir.is_some() {
+                frame.render_widget(
+                    Paragraph::new("  GGUF: ready to export").style(Style::new().fg(C_MUTED)),
+                    rows[2],
+                );
+            } else {
+                frame.render_widget(
+                    Paragraph::new("  GGUF: merge first").style(Style::new().fg(C_MUTED)),
+                    rows[2],
+                );
+            }
+        }
+    }
+
+    // --- Action hints ---
+    let mut hints: Vec<Span> = Vec::new();
+    if !app.merge_running && !app.gguf_running {
+        hints.push(Span::styled("m", Style::new().fg(C_NEON)));
+        hints.push(Span::styled(
+            " · merge adapter    ",
+            Style::new().fg(C_MUTED),
+        ));
+        if app.merged_model_dir.is_some() {
+            hints.push(Span::styled("g", Style::new().fg(C_NEON)));
+            hints.push(Span::styled(" · export GGUF    ", Style::new().fg(C_MUTED)));
+        }
+        hints.push(Span::styled("Esc", Style::new().fg(C_NEON)));
+        hints.push(Span::styled(" · back", Style::new().fg(C_MUTED)));
+    }
+    if !hints.is_empty() {
+        frame.render_widget(Paragraph::new(Line::from(hints)), rows[4]);
+    }
+
+    // --- Adapters list ---
+    frame.render_widget(
+        Paragraph::new("All Adapters").style(Style::new().fg(C_MUTED)),
+        rows[6],
+    );
+    render_adapter_list(frame, app, rows[7]);
+}
+
+/// Scan the model's cache directory for existing LoRA adapter files and list them.
+fn render_adapter_list(frame: &mut Frame, app: &App, area: Rect) {
+    // Resolve the model's snapshots dir from the model_dir field.
+    // model_dir points to .../snapshots/{hash}/, so parent is .../snapshots/
+    let snapshots_dir = std::path::Path::new(&app.finetune_model_dir)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+
+    let mut adapters: Vec<(String, String, String)> = Vec::new(); // (name, size, date)
+
+    // Look for lora_adapter.safetensors in any subdirectory of snapshots
+    if let Ok(entries) = std::fs::read_dir(snapshots_dir) {
+        for entry in entries.flatten() {
+            let dir = entry.path();
+            if !dir.is_dir() {
+                continue;
+            }
+            let adapter_file = dir.join("lora_adapter.safetensors");
+            if adapter_file.exists() {
+                let dir_name = entry.file_name().to_string_lossy().to_string();
+                let meta = std::fs::metadata(&adapter_file);
+                let size = meta
+                    .as_ref()
+                    .map(|m| fmt_bytes(m.len() as i64))
+                    .unwrap_or_else(|_| "–".to_string());
+                let modified = meta
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .map(|t| {
+                        let elapsed = t.elapsed().unwrap_or_default();
+                        let secs = elapsed.as_secs();
+                        if secs < 60 {
+                            "just now".to_string()
+                        } else if secs < 3600 {
+                            format!("{}m ago", secs / 60)
+                        } else if secs < 86400 {
+                            format!("{}h ago", secs / 3600)
+                        } else {
+                            format!("{}d ago", secs / 86400)
+                        }
+                    })
+                    .unwrap_or_else(|| "–".to_string());
+                adapters.push((dir_name, size, modified));
+            }
+        }
+    }
+
+    if adapters.is_empty() {
+        frame.render_widget(
+            Paragraph::new("  No adapters found.").style(Style::new().fg(C_MUTED)),
+            area,
+        );
+        return;
+    }
+
+    let max_rows = area.height as usize;
+    for (i, (name, size, modified)) in adapters.iter().enumerate().take(max_rows) {
+        let row_y = area.y + i as u16;
+        let row_area = Rect::new(area.x, row_y, area.width, 1);
+
+        let line = Line::from(vec![
+            Span::styled("  ◆ ", Style::new().fg(C_NEON)),
+            Span::styled(format!("{:<20}", name), Style::new().fg(C_TEXT)),
+            Span::styled(format!("{:<10}", size), Style::new().fg(C_MUTED)),
+            Span::styled(modified.as_str(), Style::new().fg(C_MUTED)),
+        ]);
+        frame.render_widget(Paragraph::new(line), row_area);
+    }
+}
+
+fn render_clone_repo(frame: &mut Frame, app: &App, area: Rect) {
+    let is_picking_base = matches!(
+        &app.clone_repo_status,
+        Some(crate::hf_clone::RepoStatus::Empty { .. })
+    );
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // 0  heading
+        Constraint::Length(1), // 1  spacer
+        Constraint::Length(1), // 2  status
+        Constraint::Length(1), // 3  spacer
+        Constraint::Length(1), // 4  Repo ID label
+        Constraint::Length(3), // 5  Repo ID input
+        Constraint::Length(1), // 6  spacer
+        Constraint::Length(1), // 7  result heading
+        Constraint::Min(0),    // 8  result / base model list
+    ])
+    .split(area);
+
+    // Heading
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Clone / Check HuggingFace Repo",
+            Style::new().fg(C_INK).bold(),
+        ))),
+        rows[0],
+    );
+
+    render_status(frame, app, rows[2]);
+
+    // Repo ID input
+    frame.render_widget(
+        Paragraph::new("Repo ID (e.g. ondeinference/joko)").style(Style::new().fg(C_MUTED)),
+        rows[4],
+    );
+
+    let input_focused = !app.clone_repo_checking && !is_picking_base;
+    let border_style = if input_focused {
+        Style::new().fg(C_NEON)
+    } else {
+        Style::new().fg(C_LINE)
+    };
+    let input_block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .style(Style::new().bg(C_SURFACE_STRONG));
+    let input_inner = input_block.inner(rows[5]);
+    frame.render_widget(input_block, rows[5]);
+    frame.render_widget(
+        Paragraph::new(app.clone_repo_id.as_str()).style(Style::new().fg(C_TEXT)),
+        input_inner,
+    );
+    if input_focused {
+        let cursor_x = (input_inner.x + app.clone_repo_id.chars().count() as u16)
+            .min(input_inner.x + input_inner.width.saturating_sub(1));
+        frame.set_cursor_position((cursor_x, input_inner.y));
+    }
+
+    // Result section
+    match &app.clone_repo_status {
+        Some(crate::hf_clone::RepoStatus::NotFound) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✗ ", Style::new().fg(C_DANGER)),
+                    Span::styled(
+                        "Repo not found. Press Enter to create it.",
+                        Style::new().fg(C_MUTED),
+                    ),
+                ])),
+                rows[7],
+            );
+        }
+        Some(crate::hf_clone::RepoStatus::HasModel { files, .. }) => {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("✓ ", Style::new().fg(C_NEON)),
+                    Span::styled(
+                        format!("Repo has {} model file(s). Already set up.", files.len()),
+                        Style::new().fg(C_NEON),
+                    ),
+                ])),
+                rows[7],
+            );
+        }
+        Some(crate::hf_clone::RepoStatus::Empty { .. }) => {
+            frame.render_widget(
+                Paragraph::new("Select a base model for fine-tuning:")
+                    .style(Style::new().fg(C_MUTED)),
+                rows[7],
+            );
+
+            // Render base model list
+            let base_models = crate::hf_clone::BASE_MODELS;
+            let items: Vec<Line> = base_models
+                .iter()
+                .enumerate()
+                .map(|(i, m)| {
+                    let selected = i == app.clone_base_cursor;
+                    let prefix = if selected { "▸ " } else { "  " };
+                    let style = if selected {
+                        Style::new().fg(C_NEON).bold()
+                    } else {
+                        Style::new().fg(C_TEXT)
+                    };
+                    Line::from(vec![
+                        Span::styled(prefix, style),
+                        Span::styled(m.display_name, style),
+                        Span::styled(
+                            format!("  {}  {}", m.size_display, m.params),
+                            Style::new().fg(C_MUTED),
+                        ),
+                    ])
+                })
+                .collect();
+
+            // Add description of selected model below the list
+            let selected_desc = base_models
+                .get(app.clone_base_cursor)
+                .map(|m| m.description)
+                .unwrap_or("");
+
+            let mut all_lines = items;
+            all_lines.push(Line::from(""));
+            all_lines.push(Line::from(Span::styled(
+                selected_desc,
+                Style::new().fg(C_MUTED).italic(),
+            )));
+
+            frame.render_widget(Paragraph::new(all_lines), rows[8]);
+        }
+        None => {
+            if app.clone_repo_checking {
+                frame.render_widget(
+                    Paragraph::new("⠿ Checking…").style(Style::new().fg(C_MUTED)),
+                    rows[7],
+                );
+            }
+        }
+    }
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
@@ -1455,6 +2202,8 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" · navigate    ", Style::new().fg(C_MUTED)),
             Span::styled("/", Style::new().fg(C_NEON)),
             Span::styled(" · search HF    ", Style::new().fg(C_MUTED)),
+            Span::styled("c", Style::new().fg(C_NEON)),
+            Span::styled(" · clone repo    ", Style::new().fg(C_MUTED)),
             Span::styled("Enter", Style::new().fg(C_NEON)),
             Span::styled(" · detail    ", Style::new().fg(C_MUTED)),
             Span::styled("Tab", Style::new().fg(C_NEON)),
@@ -1462,10 +2211,30 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
             Span::styled(" · quit", Style::new().fg(C_MUTED)),
         ],
-        Screen::FineTune if app.finetune_running => vec![
+        Screen::FineTune if app.finetune_running || app.merge_running || app.gguf_running => vec![
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
             Span::styled(" · quit", Style::new().fg(C_MUTED)),
         ],
+        Screen::FineTune
+            if matches!(
+                &app.finetune_progress,
+                Some(crate::finetune::FineTuneProgress::Done { .. })
+            ) =>
+        {
+            let mut keys = vec![
+                Span::styled("m", Style::new().fg(C_NEON)),
+                Span::styled(" · merge    ", Style::new().fg(C_MUTED)),
+            ];
+            if app.merged_model_dir.is_some() {
+                keys.push(Span::styled("g", Style::new().fg(C_NEON)));
+                keys.push(Span::styled(" · export GGUF    ", Style::new().fg(C_MUTED)));
+            }
+            keys.push(Span::styled("Esc", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · back    ", Style::new().fg(C_MUTED)));
+            keys.push(Span::styled("Ctrl+C", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · quit", Style::new().fg(C_MUTED)));
+            keys
+        }
         Screen::FineTune => vec![
             Span::styled("Tab", Style::new().fg(C_NEON)),
             Span::styled(" · next field    ", Style::new().fg(C_MUTED)),
@@ -1476,9 +2245,59 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
             Span::styled(" · quit", Style::new().fg(C_MUTED)),
         ],
-        Screen::ModelDetail => vec![
-            Span::styled("f", Style::new().fg(C_NEON)),
-            Span::styled(" · fine-tune    ", Style::new().fg(C_MUTED)),
+        Screen::ModelDetail => {
+            let mut keys = Vec::new();
+            if !app.adapter_list.is_empty() {
+                keys.push(Span::styled("Enter", Style::new().fg(C_NEON)));
+                keys.push(Span::styled(
+                    " · merge & export    ",
+                    Style::new().fg(C_MUTED),
+                ));
+            }
+            keys.push(Span::styled("f", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · fine-tune    ", Style::new().fg(C_MUTED)));
+            keys.push(Span::styled("Esc", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · back    ", Style::new().fg(C_MUTED)));
+            keys.push(Span::styled("Ctrl+C", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · quit", Style::new().fg(C_MUTED)));
+            keys
+        }
+        Screen::GgufDetail if app.upload_running => vec![
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::GgufDetail => vec![
+            Span::styled("Enter", Style::new().fg(C_NEON)),
+            Span::styled(" · upload    ", Style::new().fg(C_MUTED)),
+            Span::styled("Esc", Style::new().fg(C_NEON)),
+            Span::styled(" · back    ", Style::new().fg(C_MUTED)),
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::CloneRepo if app.clone_repo_checking => vec![
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::CloneRepo
+            if matches!(
+                &app.clone_repo_status,
+                Some(crate::hf_clone::RepoStatus::Empty { .. })
+            ) =>
+        {
+            vec![
+                Span::styled("↑↓", Style::new().fg(C_NEON)),
+                Span::styled(" · navigate    ", Style::new().fg(C_MUTED)),
+                Span::styled("Enter", Style::new().fg(C_NEON)),
+                Span::styled(" · select & download    ", Style::new().fg(C_MUTED)),
+                Span::styled("Esc", Style::new().fg(C_NEON)),
+                Span::styled(" · back    ", Style::new().fg(C_MUTED)),
+                Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+                Span::styled(" · quit", Style::new().fg(C_MUTED)),
+            ]
+        }
+        Screen::CloneRepo => vec![
+            Span::styled("Enter", Style::new().fg(C_NEON)),
+            Span::styled(" · check repo    ", Style::new().fg(C_MUTED)),
             Span::styled("Esc", Style::new().fg(C_NEON)),
             Span::styled(" · back    ", Style::new().fg(C_MUTED)),
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),

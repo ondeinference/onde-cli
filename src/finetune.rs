@@ -78,6 +78,7 @@ pub fn start_finetune(
 ) {
     std::thread::spawn(move || {
         if let Err(e) = run_finetune(&config, &tx) {
+            eprintln!("[finetune] error: {e:#}");
             let _ = tx.send(FineTuneProgress::Failed(format!("{e:#}")));
         }
     });
@@ -232,10 +233,12 @@ fn run_finetune(
         lr: config.learning_rate,
         ..ParamsAdamW::default()
     };
-    let mut optimizer = AdamW::new(lora_vars, adamw_params).context("creating AdamW optimizer")?;
+    let mut optimizer =
+        AdamW::new(lora_vars.clone(), adamw_params).context("creating AdamW optimizer")?;
 
     let total_steps = token_batches.len();
     let vocab_size = model_cfg.vocab_size;
+    let max_grad_norm: f64 = 1.0;
 
     for epoch in 0..config.epochs {
         for (step, batch_tokens) in token_batches.iter().enumerate() {
@@ -258,9 +261,67 @@ fn run_finetune(
             let loss = candle_nn::loss::cross_entropy(&logits_shifted, &targets)
                 .context("computing cross-entropy loss")?;
 
-            optimizer.backward_step(&loss).context("optimizer step")?;
-
             let loss_val = loss.to_scalar::<f32>().context("reading loss scalar")?;
+
+            // Guard against NaN/Inf loss — skip this step to avoid poisoning
+            // the optimizer state.
+            if loss_val.is_nan() || loss_val.is_infinite() {
+                eprintln!(
+                    "[finetune] WARNING: loss is {} at epoch {} step {}, skipping",
+                    loss_val,
+                    epoch + 1,
+                    step + 1
+                );
+                let _ = tx.send(FineTuneProgress::Training {
+                    epoch: epoch + 1,
+                    total_epochs: config.epochs,
+                    step: step + 1,
+                    total_steps,
+                    loss: loss_val,
+                });
+                continue;
+            }
+
+            // Manual backward + gradient clipping + optimizer step.
+            //
+            // We avoid `backward_step` so we can clip gradients between the
+            // backward pass and the AdamW update.  This preserves AdamW's
+            // momentum / velocity state (unlike manually applying lr * grad).
+            let grads = loss.backward().context("backward pass")?;
+
+            // Compute global gradient L2 norm across all LoRA variables.
+            let mut total_norm_sq: f64 = 0.0;
+            for var in &lora_vars {
+                if let Some(grad) = grads.get(var.as_tensor()) {
+                    let norm_sq = grad
+                        .sqr()
+                        .and_then(|t| t.sum_all())
+                        .and_then(|t| t.to_scalar::<f32>())
+                        .unwrap_or(0.0) as f64;
+                    total_norm_sq += norm_sq;
+                }
+            }
+            let total_norm = total_norm_sq.sqrt();
+
+            // If the global norm exceeds the threshold, scale every gradient
+            // down and insert the clipped version back into the GradStore.
+            let grads = if total_norm > max_grad_norm {
+                let clip_coef = max_grad_norm / (total_norm + 1e-6);
+                let mut clipped_grads = grads;
+                for var in &lora_vars {
+                    if let Some(grad) = clipped_grads.get(var.as_tensor()) {
+                        let clipped = (grad * clip_coef).context("clipping gradient")?;
+                        clipped_grads.insert(var.as_tensor(), clipped);
+                    }
+                }
+                clipped_grads
+            } else {
+                grads
+            };
+
+            // AdamW step with (possibly clipped) gradients — preserves
+            // first-moment and second-moment estimates.
+            optimizer.step(&grads).context("optimizer step")?;
 
             let _ = tx.send(FineTuneProgress::Training {
                 epoch: epoch + 1,
@@ -291,15 +352,19 @@ fn run_finetune(
 // ---------------------------------------------------------------------------
 
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 struct ModelConfig {
     hidden_size: usize,
     num_hidden_layers: usize,
     num_attention_heads: usize,
     num_key_value_heads: Option<usize>,
+    head_dim: Option<usize>,
     intermediate_size: usize,
     vocab_size: usize,
     rms_norm_eps: Option<f64>,
     rope_theta: Option<f64>,
+    #[serde(default)]
+    tie_word_embeddings: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -431,21 +496,29 @@ impl LoraLinear {
     }
 
     /// `y = x W^T + b  +  (x A^T) B^T * scale`
+    ///
+    /// Flattens to 2D before matmul because the published candle-core 0.10.2
+    /// Metal kernel does not support 3D × 2D matmul.
     fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
+        let (b, seq, in_f) = x.dims3()?;
+        let x_flat = x.reshape((b * seq, in_f))?;
+
         // Base projection
-        let base = x.matmul(&self.weight.t()?)?;
-        let base = match &self.bias {
-            Some(b) => base.broadcast_add(b)?,
-            None => base,
-        };
+        let base = x_flat.matmul(&self.weight.t()?)?;
 
         // LoRA path: x A^T → x B^T scaled
-        let lora = x
+        let lora = x_flat
             .matmul(&self.lora_a.as_tensor().t()?)?
             .matmul(&self.lora_b.as_tensor().t()?)?
             .affine(self.scale, 0.0)?;
 
-        base + lora
+        let out_f = self.weight.dim(0)?;
+        let combined = (base + lora)?.reshape((b, seq, out_f))?;
+
+        match &self.bias {
+            Some(bias) => combined.broadcast_add(bias),
+            None => Ok(combined),
+        }
     }
 
     /// Return the two trainable LoRA variables.
@@ -465,9 +538,13 @@ struct FrozenLinear {
 
 impl FrozenLinear {
     fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
-        let out = x.matmul(&self.weight.t()?)?;
+        let (b, seq, in_f) = x.dims3()?;
+        let x_flat = x.reshape((b * seq, in_f))?;
+        let out_flat = x_flat.matmul(&self.weight.t()?)?;
+        let out_f = self.weight.dim(0)?;
+        let out = out_flat.reshape((b, seq, out_f))?;
         match &self.bias {
-            Some(b) => out.broadcast_add(b),
+            Some(bias) => out.broadcast_add(bias),
             None => Ok(out),
         }
     }
@@ -483,6 +560,9 @@ struct TransformerLayer {
     k_proj: FrozenLinear, // frozen
     v_proj: LoraLinear,   // LoRA applied
     o_proj: FrozenLinear, // frozen
+    // QK-norm (Qwen3 only — None for Qwen2/2.5)
+    q_norm: Option<Tensor>, // [head_dim]
+    k_norm: Option<Tensor>, // [head_dim]
     // MLP projections (SwiGLU)
     gate_proj: FrozenLinear,
     up_proj: FrozenLinear,
@@ -526,6 +606,18 @@ impl TransformerLayer {
             .reshape((b, seq, self.num_kv_heads, self.head_dim))?
             .transpose(1, 2)?;
 
+        // Qwen3 QK-Norm: apply per-head RMSNorm to Q and K before RoPE.
+        let q = if let Some(w) = &self.q_norm {
+            rms_norm(&q, w, self.rms_norm_eps)?
+        } else {
+            q
+        };
+        let k = if let Some(w) = &self.k_norm {
+            rms_norm(&k, w, self.rms_norm_eps)?
+        } else {
+            k
+        };
+
         // Apply RoPE (requires contiguous storage for the custom kernel)
         let q = apply_rope(&q.contiguous()?, cos, sin)?;
         let k = apply_rope(&k.contiguous()?, cos, sin)?;
@@ -559,7 +651,9 @@ impl TransformerLayer {
         // (1 - tril) is 1 on upper triangle (blocked), 0 on lower triangle (allowed).
         let attn_bias = (1.0f64 - &tril)?.affine(-1e9, 0.0)?;
         let attn_weights = (attn_weights + attn_bias)?;
-        let attn_weights = candle_nn::ops::softmax_last_dim(&attn_weights)?;
+        // Use the generic softmax (broadcast_sub/broadcast_div internally) — the
+        // CustomOp-based softmax_last_dim has no Metal implementation in candle 0.10.2.
+        let attn_weights = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
 
         // Weighted sum of values
         let attn_out = attn_weights.matmul(&v)?;
@@ -610,6 +704,7 @@ struct LoraQwenModel {
     rope_cos: Tensor, // [max_seq_len, head_dim]
     rope_sin: Tensor, // [max_seq_len, head_dim]
     hidden_size: usize,
+    #[allow(dead_code)]
     vocab_size: usize,
     rms_norm_eps: f64,
 }
@@ -627,7 +722,7 @@ impl LoraQwenModel {
         let vocab_size = cfg.vocab_size;
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads.unwrap_or(num_heads);
-        let head_dim = hidden_size / num_heads;
+        let head_dim = cfg.head_dim.unwrap_or(hidden_size / num_heads);
         let intermediate_size = cfg.intermediate_size;
         let rms_norm_eps = cfg.rms_norm_eps.unwrap_or(1e-6);
         let rope_theta = cfg.rope_theta.unwrap_or(10_000.0);
@@ -680,6 +775,10 @@ impl LoraQwenModel {
                 bias: None,
             };
 
+            // --- QK-Norm (Qwen3 only) ---
+            let q_norm = vb_attn.pp("q_norm").get((head_dim,), "weight").ok();
+            let k_norm = vb_attn.pp("k_norm").get((head_dim,), "weight").ok();
+
             // --- MLP projections (all frozen) ---
             let vb_mlp = vb_layer.pp("mlp");
 
@@ -706,6 +805,8 @@ impl LoraQwenModel {
                 k_proj,
                 v_proj,
                 o_proj,
+                q_norm,
+                k_norm,
                 gate_proj: FrozenLinear {
                     weight: gate_weight,
                     bias: None,
@@ -729,7 +830,10 @@ impl LoraQwenModel {
 
         // Final RMSNorm and language model head
         let norm = vb.pp("model").pp("norm").get((hidden_size,), "weight")?;
-        let lm_head = vb.pp("lm_head").get((vocab_size, hidden_size), "weight")?;
+        let lm_head = vb
+            .pp("lm_head")
+            .get((vocab_size, hidden_size), "weight")
+            .unwrap_or_else(|_| embed_tokens.clone());
 
         // Precompute RoPE tables
         let (rope_cos, rope_sin) = precompute_rope(head_dim, max_seq_len, rope_theta, device)?;
@@ -773,8 +877,10 @@ impl LoraQwenModel {
         // Final RMSNorm
         let hidden = rms_norm(&hidden, &self.norm, self.rms_norm_eps)?;
 
-        // Language model head: [b, seq, vocab_size]
-        hidden.matmul(&self.lm_head.t()?)
+        // Language model head: flatten → matmul → reshape (Metal 3D×2D workaround)
+        let hidden_flat = hidden.reshape((b * seq, self.hidden_size))?;
+        let logits_flat = hidden_flat.matmul(&self.lm_head.t()?)?;
+        logits_flat.reshape((b, seq, self.vocab_size))
     }
 
     /// Collect all trainable LoRA variables across every layer.

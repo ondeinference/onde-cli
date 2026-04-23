@@ -15,6 +15,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  ONDE_APP_ID: ${{ secrets.ONDE_APP_ID }}
+  ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET }}
+  GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY }}
+  GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET }}
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
 jobs:
   verify:
@@ -25,7 +30,7 @@ jobs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -85,7 +90,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
