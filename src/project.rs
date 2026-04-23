@@ -162,10 +162,10 @@ pub fn list_projects() -> Vec<(String, ProjectMeta)> {
             let repo_name = repo_entry.file_name().to_string_lossy().to_string();
             let repo_id = format!("{org_name}/{repo_name}");
 
-            if let Ok(raw) = std::fs::read_to_string(&meta_path) {
-                if let Ok(meta) = serde_json::from_str::<ProjectMeta>(&raw) {
-                    projects.push((repo_id, meta));
-                }
+            if let Ok(raw) = std::fs::read_to_string(&meta_path)
+                && let Ok(meta) = serde_json::from_str::<ProjectMeta>(&raw)
+            {
+                projects.push((repo_id, meta));
             }
         }
     }
@@ -209,22 +209,21 @@ pub fn scan_project_artifacts(project: &OndeProject) -> Vec<ProjectArtifact> {
 
         // Check for LoRA adapter
         let lora_file = run_dir.join("lora_adapter.safetensors");
-        if lora_file.is_file() {
-            if let Some(a) = artifact_from_path(&lora_file, &run_name, ArtifactType::LoraAdapter) {
-                artifacts.push(a);
-            }
+        if lora_file.is_file()
+            && let Some(a) = artifact_from_path(&lora_file, &run_name, ArtifactType::LoraAdapter)
+        {
+            artifacts.push(a);
         }
 
         // Check for merged model
         let merged_dir = run_dir.join("merged");
         if merged_dir.is_dir() {
             let merged_safetensors = merged_dir.join("model.safetensors");
-            if merged_safetensors.is_file() {
-                if let Some(a) =
+            if merged_safetensors.is_file()
+                && let Some(a) =
                     artifact_from_path(&merged_safetensors, &run_name, ArtifactType::MergedModel)
-                {
-                    artifacts.push(a);
-                }
+            {
+                artifacts.push(a);
             }
         }
 
@@ -232,11 +231,10 @@ pub fn scan_project_artifacts(project: &OndeProject) -> Vec<ProjectArtifact> {
         if let Ok(files) = std::fs::read_dir(&run_dir) {
             for file in files.flatten() {
                 let fname = file.file_name().to_string_lossy().to_string();
-                if fname.ends_with(".gguf") {
-                    if let Some(a) = artifact_from_path(&file.path(), &run_name, ArtifactType::Gguf)
-                    {
-                        artifacts.push(a);
-                    }
+                if fname.ends_with(".gguf")
+                    && let Some(a) = artifact_from_path(&file.path(), &run_name, ArtifactType::Gguf)
+                {
+                    artifacts.push(a);
                 }
             }
         }
