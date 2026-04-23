@@ -5,7 +5,7 @@
 <h1 align="center">@ondeinference/cli</h1>
 
 <p align="center">
-  Manage your Onde Inference account from the terminal.
+  Manage your Onde Inference account and fine-tune models from the terminal.
 </p>
 
 <p align="center">
@@ -47,10 +47,49 @@ Opens a TUI. Sign up or sign in from there, no browser needed.
 | Key | What it does |
 |---|---|
 | `Tab` | Move between fields |
-| `Enter` | Submit / sign out |
+| `Enter` | Submit / confirm |
 | `Ctrl+L` | Sign in screen |
 | `Ctrl+N` | New account screen |
 | `Ctrl+C` | Quit |
+
+---
+
+## Fine-tuning
+
+`onde` includes LoRA fine-tuning for Qwen2, Qwen2.5, and Qwen3 safetensors models. It runs on Metal (Apple Silicon) or CPU — no cloud, no Python.
+
+### Supported base models
+
+| Model | Size |
+|---|---|
+| `Qwen/Qwen3-0.6B` | ~1.2 GB |
+| `Qwen/Qwen2.5-1.5B-Instruct` | ~3.0 GB |
+| `Qwen/Qwen3-1.7B` | ~3.4 GB |
+| `Qwen/Qwen3-4B` | ~8.0 GB |
+
+Only safetensors models can be fine-tuned. GGUF models are quantized — their weights aren't differentiable.
+
+### Training data
+
+One JSON object per line, each with a `text` field containing the full conversation in the Qwen chat template:
+
+```jsonl
+{"text": "<|im_start|>user\nWhat is the boiling point of water?<|im_end|>\n<|im_start|>assistant\n100°C at sea level.<|im_end|>"}
+```
+
+### Running a fine-tune
+
+1. Go to the Models tab.
+2. Select a safetensors model with `↑` / `↓`.
+3. Press `f` to open the fine-tune config.
+4. Set your data path, LoRA rank (default 8), epochs (default 3), and learning rate (default 0.0001).
+5. Start training.
+
+The adapter for a rank-8 run on the 0.6B model is about 1.5 MB.
+
+### After training
+
+Press `m` to merge the adapter into the base weights. Press `g` to export to GGUF. The output file loads directly in the [Onde SDK](https://ondeinference.com) for on-device inference.
 
 ---
 
@@ -62,7 +101,7 @@ Opens a TUI. Sign up or sign in from there, no browser needed.
   <a href="https://github.com/ondeinference/onde-swift">Swift</a>&ensp;·&ensp;<a href="https://pub.dev/packages/onde_inference">Flutter</a>&ensp;·&ensp;<a href="https://www.npmjs.com/package/@ondeinference/react-native">React Native</a>&ensp;·&ensp;<a href="https://crates.io/crates/onde">Rust</a>
 </p>
 
-This CLI handles the account side of things. The SDKs handle inference.
+This CLI handles account management and local fine-tuning. The SDKs handle inference.
 
 ---
 
