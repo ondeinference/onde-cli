@@ -1126,10 +1126,10 @@ fn handle_key_model_detail(
         (Up, _) | (Char('k'), KeyModifiers::NONE) => {
             app.adapter_cursor = app.adapter_cursor.saturating_sub(1);
         }
-        (Down, _) | (Char('j'), KeyModifiers::NONE) => {
-            if !app.adapter_list.is_empty() && app.adapter_cursor + 1 < app.adapter_list.len() {
-                app.adapter_cursor += 1;
-            }
+        (Down, _) | (Char('j'), KeyModifiers::NONE)
+            if !app.adapter_list.is_empty() && app.adapter_cursor + 1 < app.adapter_list.len() =>
+        {
+            app.adapter_cursor += 1;
         }
         // Enter on a GGUF artifact — open GGUF detail screen
         (Enter, _)
@@ -1769,10 +1769,10 @@ fn handle_key_clone_repo(
             (Up, _) | (Char('k'), KeyModifiers::NONE) => {
                 app.clone_base_cursor = app.clone_base_cursor.saturating_sub(1);
             }
-            (Down, _) | (Char('j'), KeyModifiers::NONE) => {
-                if app.clone_base_cursor + 1 < crate::hf_clone::BASE_MODELS.len() {
-                    app.clone_base_cursor += 1;
-                }
+            (Down, _) | (Char('j'), KeyModifiers::NONE)
+                if app.clone_base_cursor + 1 < crate::hf_clone::BASE_MODELS.len() =>
+            {
+                app.clone_base_cursor += 1;
             }
             (Enter, _) => {
                 // User selected a base model — download it then go to fine-tune
