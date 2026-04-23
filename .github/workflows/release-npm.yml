@@ -115,6 +115,8 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Publish platform package to NPM
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           cd npm
@@ -198,6 +200,8 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Publish base package to NPM
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           cd npm/onde-cli
