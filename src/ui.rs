@@ -87,6 +87,7 @@ fn render_card(frame: &mut Frame, app: &App, area: Rect) {
         Screen::GgufDetail => render_gguf_detail(frame, app, inner),
         Screen::FineTune => render_finetune(frame, app, inner),
         Screen::CloneRepo => render_clone_repo(frame, app, inner),
+        Screen::Chat => render_chat(frame, app, inner),
     }
 }
 
@@ -1178,30 +1179,59 @@ fn render_gguf_detail(frame: &mut Frame, app: &App, area: Rect) {
         return;
     };
 
-    let rows = Layout::vertical([
-        Constraint::Length(1), // 0  heading
-        Constraint::Length(1), // 1  spacer
-        Constraint::Length(1), // 2  status
-        Constraint::Length(1), // 3  spacer
-        Constraint::Length(1), // 4  File label
-        Constraint::Length(1), // 5  File value
-        Constraint::Length(1), // 6  spacer
-        Constraint::Length(1), // 7  Size label
-        Constraint::Length(1), // 8  Size value
-        Constraint::Length(1), // 9  spacer
-        Constraint::Length(1), // 10 Location label
-        Constraint::Length(3), // 11 Location value (bordered, wraps)
-        Constraint::Length(1), // 12 spacer
-        Constraint::Length(1), // 13 Upload heading
-        Constraint::Length(1), // 14 Repo Name label
-        Constraint::Length(3), // 15 Repo Name input
-        Constraint::Length(1), // 16 spacer
-        Constraint::Length(1), // 17 upload status / progress
-        Constraint::Length(1), // 18 spacer
-        Constraint::Min(0),    // 19 rest
-        Constraint::Length(1), // 20 hint
-    ])
-    .split(area);
+    let uploadable = gguf.is_uploadable();
+
+    let rows = if uploadable {
+        Layout::vertical([
+            Constraint::Length(1), // 0  heading
+            Constraint::Length(1), // 1  spacer
+            Constraint::Length(1), // 2  status
+            Constraint::Length(1), // 3  spacer
+            Constraint::Length(1), // 4  File label
+            Constraint::Length(1), // 5  File value
+            Constraint::Length(1), // 6  spacer
+            Constraint::Length(1), // 7  Size label
+            Constraint::Length(1), // 8  Size value
+            Constraint::Length(1), // 9  spacer
+            Constraint::Length(1), // 10 Location label
+            Constraint::Length(1), // 11 Location value
+            Constraint::Length(1), // 12 spacer
+            Constraint::Length(1), // 13 Upload heading
+            Constraint::Length(1), // 14 Repo Name label
+            Constraint::Length(3), // 15 Repo Name input
+            Constraint::Length(1), // 16 spacer
+            Constraint::Length(1), // 17 upload status / progress
+            Constraint::Length(1), // 18 spacer
+            Constraint::Min(0),    // 19 rest
+            Constraint::Length(1), // 20 hint
+        ])
+        .split(area)
+    } else {
+        Layout::vertical([
+            Constraint::Length(1), // 0  heading
+            Constraint::Length(1), // 1  spacer
+            Constraint::Length(1), // 2  status
+            Constraint::Length(1), // 3  spacer
+            Constraint::Length(1), // 4  File label
+            Constraint::Length(1), // 5  File value
+            Constraint::Length(1), // 6  spacer
+            Constraint::Length(1), // 7  Size label
+            Constraint::Length(1), // 8  Size value
+            Constraint::Length(1), // 9  spacer
+            Constraint::Length(1), // 10 Location label
+            Constraint::Length(1), // 11 Location value
+            Constraint::Length(1), // 12 spacer
+            Constraint::Length(0), // 13 (hidden)
+            Constraint::Length(0), // 14 (hidden)
+            Constraint::Length(0), // 15 (hidden)
+            Constraint::Length(0), // 16 (hidden)
+            Constraint::Length(0), // 17 (hidden)
+            Constraint::Length(0), // 18 (hidden)
+            Constraint::Min(0),    // 19 rest
+            Constraint::Length(1), // 20 hint
+        ])
+        .split(area)
+    };
 
     // Heading
     frame.render_widget(
@@ -1221,66 +1251,53 @@ fn render_gguf_detail(frame: &mut Frame, app: &App, area: Rect) {
     let size_modified = format!("{}   {}", gguf.size, gguf.modified);
     render_detail_field(frame, "Size", &size_modified, rows[7], rows[8]);
 
-    // Full path in a bordered box
-    frame.render_widget(
-        Paragraph::new("Location").style(Style::new().fg(C_MUTED)),
-        rows[10],
-    );
-    let path_block = Block::new()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(C_LINE))
-        .style(Style::new().bg(C_SURFACE_STRONG));
-    let path_inner = path_block.inner(rows[11]);
-    frame.render_widget(path_block, rows[11]);
-    frame.render_widget(
-        Paragraph::new(gguf.path.to_string_lossy().to_string())
-            .style(Style::new().fg(C_NEON))
-            .wrap(Wrap { trim: true }),
-        path_inner,
-    );
+    // Location — show a friendly label instead of the raw path
+    let location = gguf.location_label();
+    render_detail_field(frame, "Location", &location, rows[10], rows[11]);
 
-    // Upload section
-    frame.render_widget(
-        Paragraph::new("Upload to HuggingFace").style(Style::new().fg(C_MUTED)),
-        rows[13],
-    );
-
-    // Repo name input
-    frame.render_widget(
-        Paragraph::new("Repo Name").style(Style::new().fg(C_MUTED)),
-        rows[14],
-    );
-
-    let input_focused = !app.upload_running
-        && !matches!(
-            app.upload_progress,
-            Some(crate::hf_upload::UploadProgress::Done { .. })
+    // Upload section — only for locally fine-tuned models, not HF downloads
+    if uploadable {
+        frame.render_widget(
+            Paragraph::new("Upload to HuggingFace").style(Style::new().fg(C_MUTED)),
+            rows[13],
         );
-    let border_style = if input_focused {
-        Style::new().fg(C_NEON)
-    } else {
-        Style::new().fg(C_LINE)
-    };
-    let input_block = Block::new()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(border_style)
-        .style(Style::new().bg(C_SURFACE_STRONG));
-    let input_inner = input_block.inner(rows[15]);
-    frame.render_widget(input_block, rows[15]);
-    frame.render_widget(
-        Paragraph::new(app.upload_repo_name.as_str()).style(Style::new().fg(C_TEXT)),
-        input_inner,
-    );
-    if input_focused {
-        let cursor_x = (input_inner.x + app.upload_repo_name.chars().count() as u16)
-            .min(input_inner.x + input_inner.width.saturating_sub(1));
-        frame.set_cursor_position((cursor_x, input_inner.y));
-    }
 
-    // Upload progress / status
-    render_upload_status(frame, app, rows[17]);
+        // Repo name input
+        frame.render_widget(
+            Paragraph::new("Repo Name").style(Style::new().fg(C_MUTED)),
+            rows[14],
+        );
+
+        let input_focused = !app.upload_running
+            && !matches!(
+                app.upload_progress,
+                Some(crate::hf_upload::UploadProgress::Done { .. })
+            );
+        let border_style = if input_focused {
+            Style::new().fg(C_NEON)
+        } else {
+            Style::new().fg(C_LINE)
+        };
+        let input_block = Block::new()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(border_style)
+            .style(Style::new().bg(C_SURFACE_STRONG));
+        let input_inner = input_block.inner(rows[15]);
+        frame.render_widget(input_block, rows[15]);
+        frame.render_widget(
+            Paragraph::new(app.upload_repo_name.as_str()).style(Style::new().fg(C_TEXT)),
+            input_inner,
+        );
+        if input_focused {
+            let cursor_x = (input_inner.x + app.upload_repo_name.chars().count() as u16)
+                .min(input_inner.x + input_inner.width.saturating_sub(1));
+            frame.set_cursor_position((cursor_x, input_inner.y));
+        }
+
+        // Upload progress / status
+        render_upload_status(frame, app, rows[17]);
+    }
 
     // Hint
     let hint = if app.upload_running {
@@ -1290,8 +1307,10 @@ fn render_gguf_detail(frame: &mut Frame, app: &App, area: Rect) {
         Some(crate::hf_upload::UploadProgress::Done { .. })
     ) {
         "Esc · back"
+    } else if uploadable {
+        "Enter · upload    c · chat    Esc · back"
     } else {
-        "Enter · upload    Esc · back"
+        "c · chat    Esc · back"
     };
     frame.render_widget(
         Paragraph::new(hint).style(Style::new().fg(C_MUTED)),
@@ -2119,6 +2138,172 @@ fn render_clone_repo(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
+fn render_chat(frame: &mut Frame, app: &App, area: Rect) {
+    use crate::chat::ChatRole;
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // 0  heading
+        Constraint::Length(1), // 1  spacer
+        Constraint::Length(1), // 2  status line
+        Constraint::Length(1), // 3  spacer
+        Constraint::Min(0),    // 4  message history
+        Constraint::Length(1), // 5  spacer
+        Constraint::Length(1), // 6  input label
+        Constraint::Length(3), // 7  input box
+        Constraint::Length(1), // 8  hint
+    ])
+    .split(area);
+
+    // ── Heading ──────────────────────────────────────────────────────────────
+    let model_name = app
+        .selected_gguf
+        .as_ref()
+        .map(|g| g.file_name.as_str())
+        .unwrap_or("Local GGUF");
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("Chat — {model_name}"),
+            Style::new().fg(C_INK).bold(),
+        ))),
+        rows[0],
+    );
+
+    render_status(frame, app, rows[2]);
+
+    // ── Message history ───────────────────────────────────────────────────────
+    {
+        let history_area = rows[4];
+        let max_visible_lines = history_area.height as usize;
+
+        // Build all rendered lines first so we can page from the bottom.
+        let mut all_lines: Vec<Line> = Vec::new();
+        for msg in &app.chat_messages {
+            match msg.role {
+                ChatRole::User => {
+                    all_lines.push(Line::from(vec![
+                        Span::styled("You  ", Style::new().fg(C_NEON).bold()),
+                        Span::styled(msg.content.clone(), Style::new().fg(C_TEXT)),
+                    ]));
+                }
+                ChatRole::Assistant => {
+                    // Wrap long assistant replies across multiple display lines.
+                    let label = Span::styled("AI   ", Style::new().fg(C_MUTED).bold());
+                    let content_width =
+                        (history_area.width as usize).saturating_sub(5 /* label */);
+                    let words: Vec<&str> = msg.content.split_whitespace().collect();
+                    let mut line_buf = String::new();
+                    let mut first = true;
+                    for word in &words {
+                        if line_buf.len() + word.len() + 1 > content_width && !line_buf.is_empty() {
+                            let prefix = if first {
+                                label.clone()
+                            } else {
+                                Span::styled("     ", Style::new())
+                            };
+                            all_lines.push(Line::from(vec![
+                                prefix,
+                                Span::styled(line_buf.clone(), Style::new().fg(C_INK)),
+                            ]));
+                            line_buf.clear();
+                            first = false;
+                        }
+                        if !line_buf.is_empty() {
+                            line_buf.push(' ');
+                        }
+                        line_buf.push_str(word);
+                    }
+                    if !line_buf.is_empty() {
+                        let prefix = if first {
+                            label.clone()
+                        } else {
+                            Span::styled("     ", Style::new())
+                        };
+                        all_lines.push(Line::from(vec![
+                            prefix,
+                            Span::styled(line_buf, Style::new().fg(C_INK)),
+                        ]));
+                    }
+                    // Blank separator between turns.
+                    all_lines.push(Line::from(""));
+                }
+            }
+        }
+
+        if app.chat_thinking {
+            all_lines.push(Line::from(vec![
+                Span::styled("AI   ", Style::new().fg(C_MUTED).bold()),
+                Span::styled("▌", Style::new().fg(C_NEON)),
+            ]));
+        }
+
+        // Scroll: show the last `max_visible_lines` worth of lines.
+        let start = all_lines.len().saturating_sub(max_visible_lines);
+        let visible: Vec<Line> = all_lines.into_iter().skip(start).collect();
+
+        frame.render_widget(
+            Paragraph::new(visible).style(Style::new().fg(C_TEXT)),
+            history_area,
+        );
+    }
+
+    // ── Input ─────────────────────────────────────────────────────────────────
+    let input_disabled = app.chat_loading || app.chat_thinking;
+    frame.render_widget(
+        Paragraph::new("Message").style(Style::new().fg(C_MUTED)),
+        rows[6],
+    );
+
+    let border_style = if input_disabled {
+        Style::new().fg(C_LINE)
+    } else {
+        Style::new().fg(C_NEON)
+    };
+    let input_block = Block::new()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .style(Style::new().bg(C_SURFACE_STRONG));
+    let input_inner = input_block.inner(rows[7]);
+    frame.render_widget(input_block, rows[7]);
+
+    let display_text = if input_disabled {
+        if app.chat_loading {
+            "Loading model…".to_string()
+        } else {
+            "Thinking…".to_string()
+        }
+    } else {
+        app.chat_input.clone()
+    };
+
+    let text_style = if input_disabled {
+        Style::new().fg(C_MUTED)
+    } else {
+        Style::new().fg(C_TEXT)
+    };
+    frame.render_widget(
+        Paragraph::new(display_text.as_str()).style(text_style),
+        input_inner,
+    );
+
+    if !input_disabled {
+        let cursor_x = (input_inner.x + app.chat_input.chars().count() as u16)
+            .min(input_inner.x + input_inner.width.saturating_sub(1));
+        frame.set_cursor_position((cursor_x, input_inner.y));
+    }
+
+    // ── Hint ──────────────────────────────────────────────────────────────────
+    let hint = if app.chat_loading || app.chat_thinking {
+        "Ctrl+C · quit"
+    } else {
+        "Enter · send    ↑↓ · scroll    Esc · back"
+    };
+    frame.render_widget(
+        Paragraph::new(hint).style(Style::new().fg(C_MUTED)),
+        rows[8],
+    );
+}
+
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let keys: Vec<Span> = match app.screen {
         Screen::Auth => vec![
@@ -2266,9 +2451,34 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
             Span::styled(" · quit", Style::new().fg(C_MUTED)),
         ],
-        Screen::GgufDetail => vec![
+        Screen::GgufDetail => {
+            let uploadable = app
+                .selected_gguf
+                .as_ref()
+                .map(|g| g.is_uploadable())
+                .unwrap_or(false);
+            let mut keys = Vec::new();
+            if uploadable {
+                keys.push(Span::styled("Enter", Style::new().fg(C_NEON)));
+                keys.push(Span::styled(" · upload    ", Style::new().fg(C_MUTED)));
+            }
+            keys.push(Span::styled("c", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · chat    ", Style::new().fg(C_MUTED)));
+            keys.push(Span::styled("Esc", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · back    ", Style::new().fg(C_MUTED)));
+            keys.push(Span::styled("Ctrl+C", Style::new().fg(C_NEON)));
+            keys.push(Span::styled(" · quit", Style::new().fg(C_MUTED)));
+            keys
+        }
+        Screen::Chat if app.chat_loading || app.chat_thinking => vec![
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::Chat => vec![
             Span::styled("Enter", Style::new().fg(C_NEON)),
-            Span::styled(" · upload    ", Style::new().fg(C_MUTED)),
+            Span::styled(" · send    ", Style::new().fg(C_MUTED)),
+            Span::styled("↑↓", Style::new().fg(C_NEON)),
+            Span::styled(" · scroll    ", Style::new().fg(C_MUTED)),
             Span::styled("Esc", Style::new().fg(C_NEON)),
             Span::styled(" · back    ", Style::new().fg(C_MUTED)),
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),

@@ -3,7 +3,6 @@ use {
     anyhow::Result,
     crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers},
     futures::StreamExt,
-    ratatui::DefaultTerminal,
     smbcloud_auth_sdk::{
         client_credentials::ClientCredentials, login::login_with_client,
         logout::logout_with_client, me::me_with_client, signup::signup_with_client,
@@ -45,6 +44,7 @@ pub enum Screen {
     FineTune,
     GgufDetail,
     CloneRepo,
+    Chat,
 }
 
 /// What kind of artifact was found on disk.
@@ -71,6 +71,60 @@ pub struct AdapterEntry {
     pub modified: String,
     /// Whether this is a LoRA adapter or a GGUF export.
     pub kind: ArtifactKind,
+}
+
+impl AdapterEntry {
+    /// Classify the location of this artifact for display purposes.
+    ///
+    /// - `"Onde Inference"` — inside the shared App Group container
+    /// - `"HF Cache"` — inside `~/.cache/huggingface/hub` or `$HF_HOME`
+    /// - The raw path string — anything else (custom / local export)
+    pub fn location_label(&self) -> String {
+        let path_str = self.path.to_string_lossy();
+
+        // App Group container (macOS)
+        if path_str.contains("group.com.ondeinference.apps") {
+            return "Onde Inference".to_string();
+        }
+
+        // Standard HF cache locations
+        if path_str.contains(".cache/huggingface/hub") {
+            return "HF Cache".to_string();
+        }
+        if let Ok(hf_home) = std::env::var("HF_HOME")
+            && path_str.starts_with(&hf_home)
+        {
+            return "HF Cache".to_string();
+        }
+
+        // Custom / local path — show the directory
+        self.path
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| path_str.to_string())
+    }
+
+    /// Whether this GGUF should show the upload-to-HuggingFace UI.
+    ///
+    /// Only locally fine-tuned / exported models (not from a known HF cache)
+    /// are candidates for uploading — models already on HF don't need it.
+    pub fn is_uploadable(&self) -> bool {
+        let path_str = self.path.to_string_lossy();
+        // Not in the Onde app group (those are downloaded from HF)
+        if path_str.contains("group.com.ondeinference.apps") {
+            return false;
+        }
+        // Not in the standard HF cache
+        if path_str.contains(".cache/huggingface/hub") {
+            return false;
+        }
+        if let Ok(hf_home) = std::env::var("HF_HOME")
+            && path_str.starts_with(&hf_home)
+        {
+            return false;
+        }
+        true
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -177,6 +231,8 @@ pub enum AuthEvent {
     // HF upload
     UploadProgress(crate::hf_upload::UploadProgress),
     CloneProgress(crate::hf_clone::CloneProgress),
+    // chat
+    ChatProgress(crate::chat::ChatProgress),
 }
 
 pub struct App {
@@ -255,6 +311,14 @@ pub struct App {
     pub clone_repo_status: Option<crate::hf_clone::RepoStatus>,
     pub clone_base_cursor: usize,
     pub clone_progress: Option<crate::hf_clone::CloneProgress>,
+    // chat (test a local GGUF before publishing)
+    pub chat_messages: Vec<crate::chat::ChatMessage>,
+    pub chat_input: String,
+    pub chat_loading: bool,
+    pub chat_thinking: bool,
+    pub chat_progress: Option<crate::chat::ChatProgress>,
+    pub chat_command_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::chat::ChatCommand>>,
+    pub chat_scroll_offset: usize,
 }
 
 impl App {
@@ -319,6 +383,13 @@ impl App {
             clone_repo_status: None,
             clone_base_cursor: 0,
             clone_progress: None,
+            chat_messages: Vec::new(),
+            chat_input: String::new(),
+            chat_loading: false,
+            chat_thinking: false,
+            chat_progress: None,
+            chat_command_tx: None,
+            chat_scroll_offset: 0,
         }
     }
 
@@ -350,7 +421,8 @@ impl App {
             | AuthEvent::MergeProgress(_)
             | AuthEvent::GgufProgress(_)
             | AuthEvent::UploadProgress(_)
-            | AuthEvent::CloneProgress(_) => {}
+            | AuthEvent::CloneProgress(_)
+            | AuthEvent::ChatProgress(_) => {}
             _ => {
                 self.busy = false;
             }
@@ -609,11 +681,60 @@ impl App {
                 }
                 self.clone_progress = Some(progress);
             }
+            AuthEvent::ChatProgress(progress) => {
+                match &progress {
+                    crate::chat::ChatProgress::LoadingModel => {
+                        self.chat_loading = true;
+                        self.chat_thinking = false;
+                        self.status = Status::neutral("Loading model…");
+                    }
+                    crate::chat::ChatProgress::Ready { model_name } => {
+                        self.chat_loading = false;
+                        self.status =
+                            Status::success(format!("{model_name} ready. Start chatting!"));
+                    }
+                    crate::chat::ChatProgress::Thinking => {
+                        self.chat_thinking = true;
+                        self.status = Status::neutral("Thinking…");
+                    }
+                    crate::chat::ChatProgress::StreamDelta(delta) => {
+                        // Append the token to the current streaming assistant message.
+                        if let Some(last) = self.chat_messages.last_mut() {
+                            if last.role == crate::chat::ChatRole::Assistant {
+                                last.content.push_str(delta);
+                            } else {
+                                self.chat_messages
+                                    .push(crate::chat::ChatMessage::assistant(delta.clone()));
+                            }
+                        } else {
+                            self.chat_messages
+                                .push(crate::chat::ChatMessage::assistant(delta.clone()));
+                        }
+                        self.chat_scroll_offset = self.chat_messages.len().saturating_sub(1);
+                    }
+                    crate::chat::ChatProgress::Reply {
+                        text: _,
+                        duration_display,
+                    } => {
+                        self.chat_thinking = false;
+                        self.chat_scroll_offset = self.chat_messages.len().saturating_sub(1);
+                        self.status = Status::success(format!(
+                            "Reply in {duration_display}. Enter · send    Esc · back"
+                        ));
+                    }
+                    crate::chat::ChatProgress::Error(msg) => {
+                        self.chat_loading = false;
+                        self.chat_thinking = false;
+                        self.status = Status::error(msg.clone());
+                    }
+                }
+                self.chat_progress = Some(progress);
+            }
         }
     }
 }
 
-pub async fn run(terminal: &mut DefaultTerminal) -> Result<()> {
+pub async fn run<B: ratatui::backend::Backend>(terminal: &mut ratatui::Terminal<B>) -> Result<()> {
     let mut app = App::new();
     let (tx, mut rx) = mpsc::unbounded_channel::<AuthEvent>();
     let mut events = EventStream::new();
@@ -730,6 +851,7 @@ fn handle_key(
         Screen::GgufDetail => handle_key_gguf_detail(app, key, tx),
         Screen::FineTune => handle_key_finetune(app, key, tx),
         Screen::CloneRepo => handle_key_clone_repo(app, key, tx),
+        Screen::Chat => handle_key_chat(app, key, tx),
     }
 }
 
@@ -1440,12 +1562,27 @@ fn handle_key_gguf_detail(
         (Char('c'), KeyModifiers::CONTROL) => {
             app.should_quit = true;
         }
-        // Edit the repo name field
-        (Backspace, _) => {
+        // 'c' — open the chat screen to test this GGUF
+        (Char('c'), KeyModifiers::NONE) => {
+            if let Some(ref gguf) = app.selected_gguf {
+                trigger_chat(app, gguf.path.clone(), tx);
+            }
+        }
+        // Upload-only keys — guarded behind is_uploadable()
+        (Backspace, _)
+            if app
+                .selected_gguf
+                .as_ref()
+                .is_some_and(|g| g.is_uploadable()) =>
+        {
             app.upload_repo_name.pop();
         }
-        // Enter — start the upload
-        (Enter, _) => {
+        (Enter, _)
+            if app
+                .selected_gguf
+                .as_ref()
+                .is_some_and(|g| g.is_uploadable()) =>
+        {
             if app.upload_repo_name.is_empty() {
                 app.status = Status::error("Repo name cannot be empty.");
                 return;
@@ -1483,8 +1620,13 @@ fn handle_key_gguf_detail(
                 }
             });
         }
-        // Any printable char edits the repo name
-        (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+        // Printable chars edit the repo name — only when uploadable
+        (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT)
+            if app
+                .selected_gguf
+                .as_ref()
+                .is_some_and(|g| g.is_uploadable()) =>
+        {
             app.upload_repo_name.push(c);
         }
         _ => {}
@@ -1498,6 +1640,112 @@ fn format_adapter_size(bytes: u64) -> String {
         format!("{:.0}MB", bytes as f64 / 1e6)
     } else {
         format!("{:.0}KB", bytes as f64 / 1e3)
+    }
+}
+
+fn trigger_chat(
+    app: &mut App,
+    gguf_path: std::path::PathBuf,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    // Reset chat state for a fresh session.
+    app.chat_messages.clear();
+    app.chat_input.clear();
+    app.chat_loading = false;
+    app.chat_thinking = false;
+    app.chat_progress = None;
+    app.chat_scroll_offset = 0;
+    app.chat_command_tx = None;
+
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<crate::chat::ChatProgress>();
+    let (command_tx, command_rx) = mpsc::unbounded_channel::<crate::chat::ChatCommand>();
+
+    app.chat_command_tx = Some(command_tx);
+    app.screen = Screen::Chat;
+    app.status = Status::neutral("Loading model from disk…");
+
+    // Spawn the background chat worker.
+    tokio::spawn(async move {
+        crate::chat::start_chat(gguf_path, progress_tx, command_rx).await;
+    });
+
+    // Forward progress events to the main event loop.
+    tokio::spawn(async move {
+        while let Some(progress) = progress_rx.recv().await {
+            let _ = tx.send(AuthEvent::ChatProgress(progress));
+        }
+    });
+}
+
+fn handle_key_chat(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    _tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    // While model is loading or inference is running, only allow Ctrl+C.
+    if app.chat_loading || app.chat_thinking {
+        if matches!(
+            (key.code, key.modifiers),
+            (Char('c'), KeyModifiers::CONTROL)
+        ) {
+            app.should_quit = true;
+        }
+        return;
+    }
+
+    match (key.code, key.modifiers) {
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        (Esc, _) => {
+            // Send Quit to the background worker so it can clean up.
+            if let Some(ref tx) = app.chat_command_tx {
+                let _ = tx.send(crate::chat::ChatCommand::Quit);
+            }
+            app.chat_command_tx = None;
+            app.screen = Screen::GgufDetail;
+            app.status = Status::neutral("Back to GGUF detail.");
+        }
+        // Scroll up through message history.
+        (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+            app.chat_scroll_offset = app.chat_scroll_offset.saturating_sub(1);
+        }
+        // Scroll down through message history.
+        (Down, _) | (Char('j'), KeyModifiers::NONE) => {
+            let max = app.chat_messages.len().saturating_sub(1);
+            if app.chat_scroll_offset < max {
+                app.chat_scroll_offset += 1;
+            }
+        }
+        // Delete last character from input.
+        (Backspace, _) => {
+            app.chat_input.pop();
+        }
+        // Send the message.
+        (Enter, _) => {
+            let text = app.chat_input.trim().to_string();
+            if text.is_empty() {
+                return;
+            }
+            if let Some(ref tx) = app.chat_command_tx {
+                app.chat_messages
+                    .push(crate::chat::ChatMessage::user(text.clone()));
+                app.chat_scroll_offset = app.chat_messages.len().saturating_sub(1);
+                app.chat_input.clear();
+                app.chat_thinking = true;
+                app.status = Status::neutral("Thinking…");
+                let _ = tx.send(crate::chat::ChatCommand::SendMessage(text));
+            } else {
+                app.status = Status::error("Chat engine not ready.");
+            }
+        }
+        // Append printable characters to the input buffer.
+        (Char(c), KeyModifiers::NONE | KeyModifiers::SHIFT) => {
+            app.chat_input.push(c);
+        }
+        _ => {}
     }
 }
 
