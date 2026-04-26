@@ -38,13 +38,37 @@ pub enum Screen {
     Auth,
     Apps,
     AppDetail,
+    #[allow(dead_code)]
     Models,
+    InferenceModels,
     Downloads,
     ModelDetail,
     FineTune,
     GgufDetail,
     CloneRepo,
     Chat,
+}
+
+/// An entry in the Onde inference model picker.
+#[derive(Clone)]
+pub struct InferenceModelEntry {
+    /// HuggingFace model ID (e.g. "bartowski/Qwen2.5-3B-Instruct-GGUF")
+    pub model_id: String,
+    /// Human-readable name (e.g. "Qwen 2.5 3B (GGUF)")
+    pub display_name: String,
+    /// Organisation / publisher
+    #[allow(dead_code)]
+    pub org: String,
+    /// Short description
+    #[allow(dead_code)]
+    pub description: String,
+    /// Expected size in bytes
+    pub expected_size_bytes: u64,
+    /// Whether the model is already downloaded locally
+    pub downloaded: bool,
+    /// Which cache it lives in (if downloaded)
+    #[allow(dead_code)]
+    pub cache_source: Option<crate::hf::CacheSource>,
 }
 
 /// What kind of artifact was found on disk.
@@ -205,7 +229,9 @@ pub enum AuthEvent {
     },
     AppRenameFailed(String),
     // models (remote catalog for assignment)
+    #[allow(dead_code)]
     ModelsLoaded(Vec<OndeModel>),
+    #[allow(dead_code)]
     ModelsLoadFailed(String),
     ModelAssigned {
         app_index: usize,
@@ -223,6 +249,8 @@ pub enum AuthEvent {
     ModelDownloadProgress(crate::hf_search::DownloadProgress),
     ModelDownloadComplete(String), // model_id
     ModelDownloadFailed(String),
+    // inference model picker
+    InferenceModelDownloadComplete(String), // model_id
     // fine-tune
     FineTuneProgress(crate::finetune::FineTuneProgress),
     // merge + GGUF export
@@ -319,6 +347,12 @@ pub struct App {
     pub chat_progress: Option<crate::chat::ChatProgress>,
     pub chat_command_tx: Option<tokio::sync::mpsc::UnboundedSender<crate::chat::ChatCommand>>,
     pub chat_scroll_offset: usize,
+    // inference model picker (Onde local GGUF models)
+    pub inference_models: Vec<InferenceModelEntry>,
+    pub inference_cursor: usize,
+    pub inference_offset: usize,
+    // deferred navigation: open ModelDetail after downloads finish loading
+    pub pending_model_detail: bool,
 }
 
 impl App {
@@ -390,6 +424,10 @@ impl App {
             chat_progress: None,
             chat_command_tx: None,
             chat_scroll_offset: 0,
+            inference_models: Vec::new(),
+            inference_cursor: 0,
+            inference_offset: 0,
+            pending_model_detail: false,
         }
     }
 
@@ -416,6 +454,7 @@ impl App {
             AuthEvent::ModelDownloadProgress(_)
             | AuthEvent::ModelDownloadComplete(_)
             | AuthEvent::ModelDownloadFailed(_)
+            | AuthEvent::InferenceModelDownloadComplete(_)
             | AuthEvent::HfSearchResults(_)
             | AuthEvent::HfSearchFailed(_)
             | AuthEvent::MergeProgress(_)
@@ -550,7 +589,22 @@ impl App {
                 self.busy = false;
                 self.downloads = models;
                 self.downloads_loaded = true;
-                if self.downloads.is_empty() {
+                if self.pending_model_detail {
+                    self.pending_model_detail = false;
+                    let active_model = self
+                        .apps
+                        .get(self.apps_cursor)
+                        .and_then(|a| a.active_model.clone());
+                    let current_model_id = self
+                        .apps
+                        .get(self.apps_cursor)
+                        .and_then(|a| a.current_model_id.clone());
+                    navigate_to_model_detail(
+                        self,
+                        active_model.as_deref(),
+                        current_model_id.as_deref(),
+                    );
+                } else if self.downloads.is_empty() {
                     self.status = Status::neutral("No models downloaded yet.");
                 } else {
                     self.status = Status::success(format!(
@@ -606,6 +660,13 @@ impl App {
                 self.downloading = false;
                 self.download_progress = None;
                 self.status = Status::error(msg);
+            }
+            AuthEvent::InferenceModelDownloadComplete(model_id) => {
+                self.downloading = false;
+                self.download_progress = None;
+                // Refresh the inference model list so the downloaded badge updates
+                self.inference_models = build_inference_entries();
+                self.status = Status::success(format!("{model_id} downloaded and ready."));
             }
             AuthEvent::MergeProgress(progress) => {
                 match &progress {
@@ -713,7 +774,7 @@ impl App {
                         self.chat_scroll_offset = self.chat_messages.len().saturating_sub(1);
                     }
                     crate::chat::ChatProgress::Reply {
-                        text: _,
+                        _text: _,
                         duration_display,
                     } => {
                         self.chat_thinking = false;
@@ -845,6 +906,7 @@ fn handle_key(
         Screen::Auth => handle_key_auth(app, key, tx),
         Screen::Apps => handle_key_apps(app, key, tx),
         Screen::AppDetail => handle_key_app_detail(app, key, tx),
+        Screen::InferenceModels => handle_key_inference_models(app, key, tx),
         Screen::Models => handle_key_models(app, key, tx),
         Screen::Downloads => handle_key_downloads(app, key, tx),
         Screen::ModelDetail => handle_key_model_detail(app, key, tx),
@@ -1006,8 +1068,11 @@ fn handle_key_app_detail(
                 app.screen = Screen::Apps;
                 app.status = Status::neutral("Back to apps.");
             }
+            (Enter, _) => {
+                open_current_model_detail(app, tx.clone());
+            }
             (Char('m'), KeyModifiers::NONE) => {
-                open_model_picker(app, tx);
+                open_inference_picker(app);
             }
             (Char('r'), KeyModifiers::NONE) => {
                 let current_name = app
@@ -2345,6 +2410,7 @@ fn clamp_models_scroll(app: &mut App, max_visible: usize) {
     }
 }
 
+#[allow(dead_code)]
 fn open_model_picker(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
     if app.apps.is_empty() || app.busy {
         return;
@@ -2512,4 +2578,244 @@ fn extract_error(e: &ErrorResponse) -> String {
     match e {
         ErrorResponse::Error { message, .. } => message.clone(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Inference model picker
+// ---------------------------------------------------------------------------
+
+fn build_inference_entries() -> Vec<InferenceModelEntry> {
+    let local = crate::hf::list_local_models();
+
+    onde::inference::models::SUPPORTED_MODEL_INFO
+        .iter()
+        .map(|info| {
+            let local_match = local.iter().find(|m| m.model_id == info.id);
+            InferenceModelEntry {
+                model_id: info.id.to_string(),
+                display_name: info.name.to_string(),
+                org: info.org.to_string(),
+                description: info.description.to_string(),
+                expected_size_bytes: info.expected_size_bytes,
+                downloaded: local_match.is_some(),
+                cache_source: local_match.map(|m| m.source.clone()),
+            }
+        })
+        .collect()
+}
+
+fn open_inference_picker(app: &mut App) {
+    if app.busy {
+        return;
+    }
+    app.assigning_for_app_index = Some(app.apps_cursor);
+    app.inference_models = build_inference_entries();
+    app.inference_cursor = 0;
+    app.inference_offset = 0;
+    app.screen = Screen::InferenceModels;
+    app.status = Status::neutral("Pick an Onde inference model.");
+}
+
+fn open_current_model_detail(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    let Some(onde_app) = app.apps.get(app.apps_cursor) else {
+        return;
+    };
+
+    let active_model = onde_app.active_model.clone();
+    let current_model_id = onde_app.current_model_id.clone();
+
+    // If downloads aren't loaded yet, load them first and defer navigation
+    if !app.downloads_loaded {
+        app.pending_model_detail = true;
+        trigger_load_downloads(app, tx);
+        return;
+    }
+
+    navigate_to_model_detail(app, active_model.as_deref(), current_model_id.as_deref());
+}
+
+fn navigate_to_model_detail(
+    app: &mut App,
+    active_model: Option<&str>,
+    current_model_id: Option<&str>,
+) {
+    // Try to find the model in downloads
+    let found_index = app.downloads.iter().position(|d| {
+        // Match by catalog model ID
+        if let Some(mid) = current_model_id
+            && let Some(ref cm) = d.catalog_model
+            && cm.id == mid
+        {
+            return true;
+        }
+        // Match by display name
+        if let Some(name) = active_model
+            && d.display_name == name
+        {
+            return true;
+        }
+        false
+    });
+
+    if let Some(idx) = found_index {
+        app.downloads_cursor = idx;
+        // Scan adapters
+        if let Some(model) = app.downloads.get(idx) {
+            let resolved = resolve_hf_cache_path(&model.model_id);
+            app.adapter_list = scan_adapters(&resolved);
+            app.adapter_cursor = 0;
+        }
+        app.screen = Screen::ModelDetail;
+        if app.adapter_list.is_empty() {
+            app.status = Status::neutral("Model details.");
+        } else {
+            app.status = Status::success(format!(
+                "{} adapter{} found.",
+                app.adapter_list.len(),
+                if app.adapter_list.len() == 1 { "" } else { "s" }
+            ));
+        }
+    } else {
+        app.status = Status::error("Model not found locally. Press m to pick a model.");
+    }
+}
+
+fn handle_key_inference_models(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use crossterm::event::KeyCode::*;
+    match (key.code, key.modifiers) {
+        (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+            app.inference_cursor = app.inference_cursor.saturating_sub(1);
+            clamp_inference_scroll(app, MAX_VISIBLE);
+        }
+        (Down, _) | (Char('j'), KeyModifiers::NONE) => {
+            if app.inference_cursor + 1 < app.inference_models.len() {
+                app.inference_cursor += 1;
+            }
+            clamp_inference_scroll(app, MAX_VISIBLE);
+        }
+        (Enter, _) => {
+            if let Some(entry) = app.inference_models.get(app.inference_cursor).cloned() {
+                if entry.downloaded {
+                    assign_inference_model(app, &entry, tx.clone());
+                } else {
+                    trigger_inference_download(app, tx);
+                }
+            }
+        }
+        (Esc, _) => {
+            app.screen = Screen::AppDetail;
+            app.assigning_for_app_index = None;
+            app.status = Status::neutral("Back to app.");
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        _ => {}
+    }
+}
+
+fn assign_inference_model(
+    app: &mut App,
+    entry: &InferenceModelEntry,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    let Some(app_index) = app.assigning_for_app_index else {
+        // No app selected — just go back
+        app.screen = Screen::AppDetail;
+        app.status = Status::success(format!("{} is ready.", entry.display_name));
+        return;
+    };
+    let Some(onde_app) = app.apps.get(app_index) else {
+        return;
+    };
+
+    let token = token::load().unwrap_or_default();
+    let onde_app_id = onde_app.id.clone();
+    let display_name = entry.display_name.clone();
+
+    // Try to find the matching model in the remote catalog to get its API ID
+    if let Some(remote_model) = app.models.iter().find(|m| {
+        m.hf_repo_id.as_deref() == Some(entry.model_id.as_str())
+            || m.name.as_deref() == Some(entry.display_name.as_str())
+    }) {
+        let api_model_id = remote_model.id.clone();
+        app.busy = true;
+        app.status = Status::neutral(format!("Assigning {display_name}…"));
+        tokio::spawn(async move {
+            match crate::gresiq::assign_model(&token, &onde_app_id, &api_model_id).await {
+                Ok(()) => {
+                    let _ = tx.send(AuthEvent::ModelAssigned {
+                        app_index,
+                        model_id: api_model_id,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(AuthEvent::ModelAssignFailed(e.to_string()));
+                }
+            }
+        });
+    } else {
+        // Remote models not loaded yet — just update the local state
+        if let Some(onde_app) = app.apps.get_mut(app_index) {
+            onde_app.active_model = Some(display_name.clone());
+        }
+        app.screen = Screen::AppDetail;
+        app.assigning_for_app_index = None;
+        app.status = Status::success(format!("{display_name} selected."));
+    }
+}
+
+fn clamp_inference_scroll(app: &mut App, max_visible: usize) {
+    if app.inference_cursor < app.inference_offset {
+        app.inference_offset = app.inference_cursor;
+    } else if app.inference_cursor >= app.inference_offset + max_visible {
+        app.inference_offset = app.inference_cursor + 1 - max_visible;
+    }
+}
+
+fn trigger_inference_download(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    let Some(entry) = app.inference_models.get(app.inference_cursor) else {
+        return;
+    };
+    if app.downloading {
+        app.status = Status::error("A download is already in progress.");
+        return;
+    }
+    let model_id = entry.model_id.clone();
+    let hub = crate::hf::preferred_download_hub();
+
+    app.downloading = true;
+    app.download_progress = None;
+    app.status = Status::neutral(format!("Downloading {}…", entry.display_name));
+
+    let (dl_tx, mut dl_rx) = mpsc::unbounded_channel::<crate::hf_search::DownloadEvent>();
+
+    let model_id_clone = model_id.clone();
+    tokio::spawn(async move {
+        crate::hf_search::download_model(model_id_clone, hub, dl_tx).await;
+    });
+
+    let auth_tx = tx.clone();
+    tokio::spawn(async move {
+        while let Some(event) = dl_rx.recv().await {
+            match event {
+                crate::hf_search::DownloadEvent::Progress(p) => {
+                    let _ = auth_tx.send(AuthEvent::ModelDownloadProgress(p));
+                }
+                crate::hf_search::DownloadEvent::Complete => {
+                    let _ =
+                        auth_tx.send(AuthEvent::InferenceModelDownloadComplete(model_id.clone()));
+                    break;
+                }
+                crate::hf_search::DownloadEvent::Failed(e) => {
+                    let _ = auth_tx.send(AuthEvent::ModelDownloadFailed(e));
+                    break;
+                }
+            }
+        }
+    });
 }

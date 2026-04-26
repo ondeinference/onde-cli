@@ -41,6 +41,7 @@ serde_json = "1"
 half = "2"
 sha2 = "0.10"
 mistralrs = { git = "https://github.com/setoelkahfi/mistral.rs", branch = "fix/all-platform-fixes" }
+onde = { path = "../onde" }
 
 # Metal and Accelerate are macOS-only frameworks; Cargo merges features so on
 # macOS these are added on top of the base candle-core dep above.

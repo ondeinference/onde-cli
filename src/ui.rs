@@ -81,6 +81,7 @@ fn render_card(frame: &mut Frame, app: &App, area: Rect) {
         Screen::Auth => render_form(frame, app, inner),
         Screen::Apps => render_apps(frame, app, inner),
         Screen::AppDetail => render_app_detail(frame, app, inner),
+        Screen::InferenceModels => render_inference_models(frame, app, inner),
         Screen::Models => render_models(frame, app, inner),
         Screen::Downloads => render_downloads(frame, app, inner),
         Screen::ModelDetail => render_model_detail(frame, app, inner),
@@ -532,10 +533,20 @@ fn render_app_detail(frame: &mut Frame, app: &App, area: Rect) {
         render_status(frame, app, rows[2]);
         render_detail_field(frame, "App ID", app_id, rows[4], rows[5]);
         render_detail_field(frame, "App Secret", app_secret, rows[7], rows[8]);
-        render_detail_field(frame, "Model", model_name, rows[10], rows[11]);
+        frame.render_widget(
+            Paragraph::new("Model").style(Style::new().fg(C_MUTED)),
+            rows[10],
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(model_name, Style::new().fg(C_NEON).bold()),
+                Span::styled("  ▸", Style::new().fg(C_MUTED)),
+            ])),
+            rows[11],
+        );
 
         frame.render_widget(
-            Paragraph::new("m · assign model   r · rename   s · sign out   Esc · back")
+            Paragraph::new("Enter · detail   m · model   r · rename   Esc · back")
                 .style(Style::new().fg(C_MUTED)),
             rows[13],
         );
@@ -582,6 +593,116 @@ fn render_rename_input(frame: &mut Frame, value: &str, area: Rect) {
     let cursor_x =
         (inner.x + value.chars().count() as u16).min(inner.x + inner.width.saturating_sub(1));
     frame.set_cursor_position((cursor_x, inner.y));
+}
+
+// inference models screen
+
+fn render_inference_models(frame: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::vertical([
+        Constraint::Length(1), // heading
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // column header
+        Constraint::Length(1), // divider
+        Constraint::Min(0),    // list
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // status / download progress
+    ])
+    .split(area);
+
+    let heading: String = app
+        .assigning_for_app_index
+        .and_then(|i| app.apps.get(i))
+        .map(|a| format!("Assign model — {}", a.name))
+        .unwrap_or_else(|| "Models".to_string());
+
+    frame.render_widget(
+        Paragraph::new(heading).style(Style::new().fg(C_INK).bold()),
+        rows[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new("  Name                            Size         Status")
+            .style(Style::new().fg(C_MUTED)),
+        rows[2],
+    );
+
+    let divider = "─".repeat(area.width as usize);
+    frame.render_widget(
+        Paragraph::new(divider).style(Style::new().fg(C_LINE)),
+        rows[3],
+    );
+
+    let list_area = rows[4];
+    if app.inference_models.is_empty() {
+        frame.render_widget(
+            Paragraph::new("  No supported models found.").style(Style::new().fg(C_MUTED)),
+            list_area,
+        );
+    } else {
+        let max_rows = list_area.height as usize;
+        for (list_idx, entry) in app
+            .inference_models
+            .iter()
+            .enumerate()
+            .skip(app.inference_offset)
+            .take(max_rows)
+        {
+            let row_y = list_area.y + (list_idx - app.inference_offset) as u16;
+            let row_area = Rect::new(list_area.x, row_y, list_area.width, 1);
+
+            let is_selected = list_idx == app.inference_cursor;
+            let prefix = if is_selected { "▶ " } else { "  " };
+
+            let size_str = fmt_bytes(entry.expected_size_bytes as i64);
+            let status_str = if entry.downloaded {
+                "✓ ready"
+            } else {
+                "↓ download"
+            };
+
+            let line = format!(
+                "{}{:<32} {:<12} {}",
+                prefix, entry.display_name, size_str, status_str
+            );
+
+            let style = if is_selected {
+                Style::new().fg(C_NEON)
+            } else if entry.downloaded {
+                Style::new().fg(C_TEXT)
+            } else {
+                Style::new().fg(C_MUTED)
+            };
+
+            frame.render_widget(Paragraph::new(line).style(style), row_area);
+        }
+    }
+
+    // Show download progress if downloading
+    if app.downloading {
+        if let Some(progress) = &app.download_progress {
+            let pct = if progress.file_bytes_total > 0 {
+                (progress.file_bytes_done as f64 / progress.file_bytes_total as f64 * 100.0) as u64
+            } else {
+                0
+            };
+            let progress_text = format!(
+                "Downloading {} — {} ({}/{}  {}%)",
+                progress.model_id,
+                progress.filename,
+                fmt_bytes(progress.file_bytes_done as i64),
+                fmt_bytes(progress.file_bytes_total as i64),
+                pct
+            );
+            frame.render_widget(
+                Paragraph::new(progress_text).style(Style::new().fg(C_NEON)),
+                rows[6],
+            );
+        } else {
+            render_status(frame, app, rows[6]);
+        }
+    } else {
+        render_status(frame, app, rows[6]);
+    }
 }
 
 // models screen
@@ -2349,10 +2470,26 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" · quit", Style::new().fg(C_MUTED)),
         ],
         Screen::AppDetail => vec![
+            Span::styled("Enter", Style::new().fg(C_NEON)),
+            Span::styled(" · detail    ", Style::new().fg(C_MUTED)),
             Span::styled("m", Style::new().fg(C_NEON)),
-            Span::styled(" · assign model    ", Style::new().fg(C_MUTED)),
+            Span::styled(" · model    ", Style::new().fg(C_MUTED)),
             Span::styled("r", Style::new().fg(C_NEON)),
             Span::styled(" · rename    ", Style::new().fg(C_MUTED)),
+            Span::styled("Esc", Style::new().fg(C_NEON)),
+            Span::styled(" · back    ", Style::new().fg(C_MUTED)),
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::InferenceModels if app.downloading => vec![
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::InferenceModels => vec![
+            Span::styled("↑↓", Style::new().fg(C_NEON)),
+            Span::styled(" · navigate    ", Style::new().fg(C_MUTED)),
+            Span::styled("Enter", Style::new().fg(C_NEON)),
+            Span::styled(" · select / download    ", Style::new().fg(C_MUTED)),
             Span::styled("Esc", Style::new().fg(C_NEON)),
             Span::styled(" · back    ", Style::new().fg(C_MUTED)),
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),

@@ -24,7 +24,7 @@ pub enum ChatProgress {
     Thinking,
     /// A complete assistant reply has been produced.
     Reply {
-        text: String,
+        _text: String,
         duration_display: String,
     },
     /// A partial token arrived from the streaming response.
@@ -269,7 +269,7 @@ pub async fn start_chat(
                     history.push((TextMessageRole::Assistant, reply_buf.trim().to_string()));
 
                     let _ = progress_tx.send(ChatProgress::Reply {
-                        text: reply_buf.trim().to_string(),
+                        _text: reply_buf.trim().to_string(),
                         duration_display: format_duration(elapsed),
                     });
                 }
