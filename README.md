@@ -161,6 +161,6 @@ Logs are written to `~/.cache/onde/debug.log`.
 
 Dual-licensed under [MIT](https://github.com/ondeinference/onde-cli/blob/main/LICENSE-MIT) and [Apache 2.0](https://github.com/ondeinference/onde-cli/blob/main/LICENSE-APACHE).
 
-<p align="center">
-  <sub>© 2026 <a href="https://ondeinference.com">Onde Inference</a> · <a href="https://apps.apple.com/se/developer/splitfire-ab/id1831430993">Splitfire AB</a></sub>
-</p>
+## Copyright
+
+© 2026 [Onde Inference](https://ondeinference.com) (Splitfire AB).
