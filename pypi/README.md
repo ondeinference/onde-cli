@@ -215,6 +215,6 @@ Dual-licensed under **MIT** and **Apache 2.0**.
 
 ---
 
-<p align="center">
-  <sub>Built by <a href="https://ondeinference.com">Onde Inference</a> · © 2026</sub>
-</p>
+## Copyright
+
+© 2026 [Onde Inference](https://ondeinference.com) (Splitfire AB).

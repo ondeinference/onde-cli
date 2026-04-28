@@ -52,12 +52,12 @@ jobs:
             }
           - {
               NAME: darwin-x64,
-              OS: macos-15-intel,
+              OS: macos-26-intel,
               TARGET: x86_64-apple-darwin,
             }
           - {
               NAME: darwin-arm64,
-              OS: macos-latest,
+              OS: macos-26,
               TARGET: aarch64-apple-darwin,
             }
 

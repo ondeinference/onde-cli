@@ -26,6 +26,8 @@ Manage your Onde Inference account, fine-tune local models, and export them to G
 
 ## Install
 
+[Install onde-cli](https://github.com/ondeinference/onde-cli) with your favorite tool.
+
 ### npm
 
 ```sh
@@ -39,12 +41,15 @@ brew tap ondeinference/homebrew-tap
 brew install onde
 ```
 
-### pip / uv
+### pip / uv / uvx
 
 ```sh
 pip install onde-cli
 # or
 uv tool install onde-cli
+uv run onde
+# or with
+uvx --from onde-cli onde
 ```
 
 ### Pre-built binary
@@ -65,21 +70,6 @@ chmod +x onde && mv onde /usr/local/bin/onde
 | Linux arm64 | `onde-linux-arm64` |
 | Windows x64 | `onde-win-amd64.exe` |
 | Windows arm64 | `onde-win-arm64.exe` |
-
-### cargo
-
-```sh
-cargo install onde-cli
-```
-
-### Build from source
-
-```sh
-git clone https://github.com/ondeinference/onde-cli
-cd onde-cli
-cargo build --release
-./target/release/onde
-```
 
 ---
 
@@ -171,6 +161,6 @@ Logs are written to `~/.cache/onde/debug.log`.
 
 Dual-licensed under [MIT](https://github.com/ondeinference/onde-cli/blob/main/LICENSE-MIT) and [Apache 2.0](https://github.com/ondeinference/onde-cli/blob/main/LICENSE-APACHE).
 
-<p align="center">
-  <sub>© 2026 <a href="https://ondeinference.com">Onde Inference</a> · <a href="https://apps.apple.com/se/developer/splitfire-ab/id1831430993">Splitfire AB</a></sub>
-</p>
+## Copyright
+
+© 2026 [Onde Inference](https://ondeinference.com) (Splitfire AB).
