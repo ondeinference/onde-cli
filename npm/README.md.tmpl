@@ -1,23 +1,28 @@
 <p align="center">
-  <img src="https://avatars.githubusercontent.com/u/218425892?s=200&v=4" alt="Onde Inference" width="96">
+  <img src="https://raw.githubusercontent.com/ondeinference/onde/main/assets/onde-inference-logo.svg" alt="Onde Inference" width="96">
 </p>
 
-<h1 align="center">Onde CLI</h1>
+<h1 align="center">${node_pkg}</h1>
 
-## `${node_pkg}`
+This package is one of the platform-specific binaries behind [`@ondeinference/cli`](https://www.npmjs.com/package/@ondeinference/cli).
 
-This is a platform-specific binary for [`@ondeinference/cli`](https://www.npmjs.com/package/@ondeinference/cli). You don't need to install it directly.
-
-Install the main package instead:
+You usually should not install it directly. Install the main package instead:
 
 ```sh
 npm install -g @ondeinference/cli
 ```
 
-npm pulls in the right binary for your OS and architecture.
+npm will pick the right binary for your OS and CPU automatically.
+
+## What this package is for
+
+`@ondeinference/cli` ships native binaries for different platforms. This package is one of those binaries. It exists so the main npm package can install the correct executable on macOS, Linux, or Windows without making you think about it.
+
+If you landed here from npm search results, the package you probably want is [`@ondeinference/cli`](https://www.npmjs.com/package/@ondeinference/cli).
 
 ## Links
 
+- [Main npm package](https://www.npmjs.com/package/@ondeinference/cli)
 - [Source code](https://github.com/ondeinference/onde-cli)
 - [Issues](https://github.com/ondeinference/onde-cli/issues)
 - [Website](https://ondeinference.com)
