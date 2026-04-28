@@ -22,7 +22,7 @@
 
 ---
 
-Manage your Onde Inference account, fine-tune local models, and export them to GGUF — all from the terminal.
+Manage your Onde Inference account, fine-tune local models, and export them to GGUF, all from the terminal.
 
 ## Install
 
@@ -49,7 +49,7 @@ uv tool install onde-cli
 
 ### Pre-built binary
 
-Download from [GitHub Releases](https://github.com/ondeinference/onde-cli/releases):
+Download a release from [GitHub Releases](https://github.com/ondeinference/onde-cli/releases):
 
 ```sh
 # macOS Apple Silicon
@@ -89,33 +89,33 @@ cargo build --release
 onde
 ```
 
-Opens a TUI. Sign up or sign in from there.
+This opens the TUI. You can sign up or sign in right there.
 
 | Key | What it does |
 |---|---|
-| `Tab` | move between fields |
-| `Enter` | submit / sign out |
-| `Ctrl+L` | sign in screen |
-| `Ctrl+N` | new account screen |
-| `Ctrl+C` | quit |
+| `Tab` | Move between fields |
+| `Enter` | Submit or sign out |
+| `Ctrl+L` | Go to the sign-in screen |
+| `Ctrl+N` | Go to the new account screen |
+| `Ctrl+C` | Quit |
 
 ---
 
 ## Fine-tuning
 
-onde includes a LoRA fine-tuning pipeline for Qwen2, Qwen2.5, and Qwen3 models. Runs on Metal on Apple Silicon, CPU elsewhere. No cloud, no Python.
+`onde` includes a LoRA fine-tuning pipeline for Qwen2, Qwen2.5, and Qwen3 models. It runs locally: Metal on Apple Silicon, CPU elsewhere. No cloud setup. No Python environment.
 
-The full pipeline: download a safetensors base model → fine-tune with LoRA → merge the adapter into the base weights → export to GGUF → load in the Onde SDK.
+The flow is straightforward: download a safetensors base model, fine-tune it with LoRA, merge the adapter back into the base weights, then export to GGUF for use in the Onde SDK.
 
 ### Training data format
 
-Each line is a complete conversation in Qwen's chat template:
+Each line should be one complete conversation in Qwen's chat template:
 
 ```jsonl
 {"text": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nWhat is LoRA?<|im_end|>\n<|im_start|>assistant\nLoRA adds small trainable matrices to frozen layers, letting you fine-tune large models without updating all the weights.<|im_end|>"}
 ```
 
-Save it anywhere — the TUI lets you point to the file path.
+Save the file wherever you want. The TUI lets you point to it directly.
 
 ### Running it
 
@@ -126,25 +126,25 @@ onde
   → Press f
 ```
 
-Only safetensors models can be fine-tuned. GGUF models can't — they're quantized and the weights aren't differentiable.
+Only safetensors models can be fine-tuned. GGUF models are already quantized, so their weights are not differentiable.
 
 Configure the run:
 
 | Field | Default | Notes |
 |---|---|---|
 | Training data | `~/.onde/finetune/train.jsonl` | Path to your JSONL file |
-| LoRA rank | `8` | Higher = more capacity, more memory |
+| LoRA rank | `8` | Higher means more capacity and more memory use |
 | Epochs | `3` | Full passes over the dataset |
 | Learning rate | `0.0001` | AdamW default |
 
-Press `Enter` to start. Loss should drop by epoch 2. If it doesn't, try bumping the learning rate to `0.0003`.
+Press `Enter` to start. In a healthy run, loss usually starts dropping by epoch 2. If it stays flat, try `0.0003`.
 
 ### After training
 
-The adapter is ~1.5 MB for rank 8 on a 0.6B model. From the fine-tune done screen:
+For rank 8 on a 0.6B model, the adapter is about 1.5 MB. From the fine-tune complete screen:
 
-- `m` — merge adapter into the base model
-- `g` — export merged model to GGUF
+- `m` to merge the adapter into the base model
+- `g` to export the merged model to GGUF
 
 The resulting GGUF loads directly in the Onde SDK for on-device inference.
 
@@ -152,18 +152,18 @@ The resulting GGUF loads directly in the Onde SDK for on-device inference.
 
 | Model | Size | Notes |
 |---|---|---|
-| `Qwen/Qwen3-0.6B` | ~1.2 GB | Smallest, fastest to train |
-| `Qwen/Qwen2.5-1.5B-Instruct` | ~3.0 GB | Good for instruction tuning |
-| `Qwen/Qwen3-1.7B` | ~3.4 GB | Latest small Qwen3 |
-| `Qwen/Qwen3-4B` | ~8.0 GB | Best quality, macOS recommended |
+| `Qwen/Qwen3-0.6B` | ~1.2 GB | Smallest and quickest to train |
+| `Qwen/Qwen2.5-1.5B-Instruct` | ~3.0 GB | Good default for instruction tuning |
+| `Qwen/Qwen3-1.7B` | ~3.4 GB | Newer small Qwen3 model |
+| `Qwen/Qwen3-4B` | ~8.0 GB | Best quality, better suited to macOS |
 
-Search for any of these by pressing `/` on the Models tab.
+You can search for any of these from the Models tab with `/`.
 
 ---
 
 ## Debug
 
-Logs go to `~/.cache/onde/debug.log`.
+Logs are written to `~/.cache/onde/debug.log`.
 
 ---
 

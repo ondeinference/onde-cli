@@ -5,7 +5,7 @@
 <h1 align="center">@ondeinference/cli</h1>
 
 <p align="center">
-  Manage your Onde Inference account and fine-tune models from the terminal.
+  A terminal app for your Onde Inference account, plus local model fine-tuning.
 </p>
 
 <p align="center">
@@ -23,40 +23,64 @@
 npm install -g @ondeinference/cli
 ```
 
-The right binary for your platform gets pulled in automatically. Works on macOS (Apple Silicon and Intel), Linux (x64 and arm64), and Windows (x64 and arm64).
+npm installs the right native binary for your platform automatically.
+
+It works on:
+
+- macOS (Apple Silicon and Intel)
+- Linux (x64 and arm64)
+- Windows (x64 and arm64)
 
 ### Other ways to install
 
 | Method | Command |
 |---|---|
-| **Homebrew** | `brew install ondeinference/homebrew-tap/onde` |
-| **pip** | `pip install onde-cli` |
-| **uv** | `uv tool install onde-cli` |
-| **Cargo** | `cargo install onde-cli` |
+| Homebrew | `brew install ondeinference/homebrew-tap/onde` |
+| pip | `pip install onde-cli` |
+| uv | `uv tool install onde-cli` |
+| Cargo | `cargo install onde-cli` |
 
 ---
 
-## Usage
+## Run it
 
 ```sh
 onde
 ```
 
-Opens a TUI. Sign up or sign in from there, no browser needed.
+That opens the terminal UI.
 
-| Key | What it does |
+From there you can:
+
+- sign up or sign in
+- create and manage apps
+- assign models
+- fine-tune supported local models
+- export merged models to GGUF
+
+No browser needed.
+
+## Basic keys
+
+| Key | Action |
 |---|---|
 | `Tab` | Move between fields |
-| `Enter` | Submit / confirm |
-| `Ctrl+L` | Sign in screen |
-| `Ctrl+N` | New account screen |
+| `Enter` | Submit or confirm |
+| `Ctrl+L` | Go to sign in |
+| `Ctrl+N` | Go to create account |
 | `Ctrl+C` | Quit |
 
 ---
 
 ## Fine-tuning
 
-`onde` includes LoRA fine-tuning for Qwen2, Qwen2.5, and Qwen3 safetensors models. It runs on Metal (Apple Silicon) or CPU — no cloud, no Python.
+`onde` can fine-tune Qwen2, Qwen2.5, and Qwen3 safetensors models with LoRA.
+
+Training runs locally:
+- Metal on Apple Silicon
+- CPU on other platforms
+
+So yes, no cloud training setup and no Python environment to babysit.
 
 ### Supported base models
 
@@ -67,11 +91,11 @@ Opens a TUI. Sign up or sign in from there, no browser needed.
 | `Qwen/Qwen3-1.7B` | ~3.4 GB |
 | `Qwen/Qwen3-4B` | ~8.0 GB |
 
-Only safetensors models can be fine-tuned. GGUF models are quantized — their weights aren't differentiable.
+Only safetensors models can be fine-tuned. GGUF models are already quantized, so their weights are not differentiable.
 
 ### Training data
 
-One JSON object per line, each with a `text` field containing the full conversation in the Qwen chat template:
+Use one JSON object per line. Each object needs a `text` field containing the full conversation in Qwen's chat template.
 
 ```jsonl
 {"text": "<|im_start|>user\nWhat is the boiling point of water?<|im_end|>\n<|im_start|>assistant\n100°C at sea level.<|im_end|>"}
@@ -79,35 +103,40 @@ One JSON object per line, each with a `text` field containing the full conversat
 
 ### Running a fine-tune
 
-1. Go to the Models tab.
-2. Select a safetensors model with `↑` / `↓`.
+1. Open the Models tab.
+2. Pick a safetensors model with `↑` / `↓`.
 3. Press `f` to open the fine-tune config.
-4. Set your data path, LoRA rank (default 8), epochs (default 3), and learning rate (default 0.0001).
+4. Set your data path, LoRA rank (default `8`), epochs (default `3`), and learning rate (default `0.0001`).
 5. Start training.
 
-The adapter for a rank-8 run on the 0.6B model is about 1.5 MB.
+A rank-8 adapter for the 0.6B model is about 1.5 MB, so the output stays pretty small.
 
 ### After training
 
-Press `m` to merge the adapter into the base weights. Press `g` to export to GGUF. The output file loads directly in the [Onde SDK](https://ondeinference.com) for on-device inference.
+- Press `m` to merge the adapter into the base weights.
+- Press `g` to export the merged model to GGUF.
+
+The exported file loads directly in the [Onde SDK](https://ondeinference.com) for on-device inference.
 
 ---
 
-## What's Onde?
+## What is Onde?
 
-[Onde Inference](https://ondeinference.com) runs LLMs on the user's device. No server round-trips, no data leaving the hardware. It ships as a native SDK for each platform:
+[Onde Inference](https://ondeinference.com) is for running LLMs on the user's device. No server round-trips, no sending prompts off to somebody else's machine.
+
+It ships as native SDKs for:
 
 <p align="center">
   <a href="https://github.com/ondeinference/onde-swift">Swift</a>&ensp;·&ensp;<a href="https://pub.dev/packages/onde_inference">Flutter</a>&ensp;·&ensp;<a href="https://www.npmjs.com/package/@ondeinference/react-native">React Native</a>&ensp;·&ensp;<a href="https://crates.io/crates/onde">Rust</a>
 </p>
 
-This CLI handles account management and local fine-tuning. The SDKs handle inference.
+The CLI is for account management and local fine-tuning. The SDKs are what you ship in your app.
 
 ---
 
 ## Debug
 
-Logs go to `~/.cache/onde/debug.log`.
+Logs are written to `~/.cache/onde/debug.log`.
 
 ## License
 
