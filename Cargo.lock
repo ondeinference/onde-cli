@@ -3352,7 +3352,7 @@ dependencies = [
 
 [[package]]
 name = "onde-cli"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "candle-core",
