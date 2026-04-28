@@ -8,7 +8,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use mistralrs::{GgufModelBuilder, RequestBuilder, Response, TextMessageRole, TokenSource};
+use onde::mistralrs::{
+    GgufModelBuilder, RequestBuilder, Response, TextMessageRole, TokenSource,
+};
 use tokio::sync::mpsc;
 
 // ── Public types ──────────────────────────────────────────────────────────────
