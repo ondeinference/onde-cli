@@ -326,6 +326,9 @@ pub struct App {
     // adapters discovered on the model detail screen
     pub adapter_list: Vec<AdapterEntry>,
     pub adapter_cursor: usize,
+    /// `true` when the model on the detail screen has `config.json` (safetensors)
+    /// and can therefore be fine-tuned.  GGUF-only models set this to `false`.
+    pub model_detail_can_finetune: bool,
     // GGUF detail + upload
     pub selected_gguf: Option<AdapterEntry>,
     pub upload_running: bool,
@@ -407,6 +410,7 @@ impl App {
             merged_model_dir: None,
             adapter_list: Vec::new(),
             adapter_cursor: 0,
+            model_detail_can_finetune: false,
             selected_gguf: None,
             upload_running: false,
             upload_progress: None,
@@ -1248,17 +1252,28 @@ fn handle_key_downloads(
         }
         (Enter, _) if !app.downloads.is_empty() => {
             // Scan for existing adapters before entering the detail screen
+            let can_finetune;
             if let Some(model) = app.downloads.get(app.downloads_cursor) {
                 let resolved = resolve_hf_cache_path(&model.model_id);
+                can_finetune = !resolved.is_empty()
+                    && std::path::Path::new(&resolved).join("config.json").exists();
                 app.adapter_list = scan_adapters(&resolved);
                 app.adapter_cursor = 0;
+            } else {
+                can_finetune = false;
             }
+            app.model_detail_can_finetune = can_finetune;
             app.screen = Screen::ModelDetail;
             if app.adapter_list.is_empty() {
                 app.status = Status::neutral("Model details.");
             } else {
+                let ft_hint = if can_finetune {
+                    "   f · fine-tune new"
+                } else {
+                    ""
+                };
                 app.status = Status::success(format!(
-                    "{} adapter{} found. Enter · merge & export   f · fine-tune new",
+                    "{} adapter{} found. Enter · merge & export{ft_hint}",
                     app.adapter_list.len(),
                     if app.adapter_list.len() == 1 { "" } else { "s" }
                 ));
@@ -1385,15 +1400,11 @@ fn handle_key_model_detail(
                 app.status = Status::error("No adapter selected.");
             }
         }
-        (Char('f'), KeyModifiers::NONE) => {
+        (Char('f'), KeyModifiers::NONE) if app.model_detail_can_finetune => {
             if let Some(model) = app.downloads.get(app.downloads_cursor) {
                 let resolved = resolve_hf_cache_path(&model.model_id);
                 if resolved.is_empty() {
                     app.status = Status::error("Model not downloaded locally.");
-                } else if !std::path::Path::new(&resolved).join("config.json").exists() {
-                    app.status = Status::error(
-                        "Fine-tuning requires a safetensors model (GGUF not supported).",
-                    );
                 } else {
                     app.finetune_model_id = model.model_id.clone();
                     app.finetune_model_dir = resolved;

@@ -1227,11 +1227,12 @@ fn render_model_detail(frame: &mut Frame, app: &App, area: Rect) {
 /// Render the selectable artifact list inside the Model Detail screen.
 fn render_model_detail_adapters(frame: &mut Frame, app: &App, area: Rect) {
     if app.adapter_list.is_empty() {
-        frame.render_widget(
-            Paragraph::new("  No artifacts found. Press f to fine-tune.")
-                .style(Style::new().fg(C_MUTED)),
-            area,
-        );
+        let msg = if app.model_detail_can_finetune {
+            "  No artifacts found. Press f to fine-tune."
+        } else {
+            "  No artifacts found. (GGUF models cannot be fine-tuned.)"
+        };
+        frame.render_widget(Paragraph::new(msg).style(Style::new().fg(C_MUTED)), area);
         return;
     }
 
@@ -2576,8 +2577,10 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                     Style::new().fg(C_MUTED),
                 ));
             }
-            keys.push(Span::styled("f", Style::new().fg(C_NEON)));
-            keys.push(Span::styled(" · fine-tune    ", Style::new().fg(C_MUTED)));
+            if app.model_detail_can_finetune {
+                keys.push(Span::styled("f", Style::new().fg(C_NEON)));
+                keys.push(Span::styled(" · fine-tune    ", Style::new().fg(C_MUTED)));
+            }
             keys.push(Span::styled("Esc", Style::new().fg(C_NEON)));
             keys.push(Span::styled(" · back    ", Style::new().fg(C_MUTED)));
             keys.push(Span::styled("Ctrl+C", Style::new().fg(C_NEON)));

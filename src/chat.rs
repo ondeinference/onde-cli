@@ -168,13 +168,19 @@ pub async fn start_chat(
     };
 
     // ── 3. Build and load the model ──────────────────────────────────────────
+    log::info!("[chat] loading GGUF from dir={model_dir:?} file={file_name:?}");
     let model = match GgufModelBuilder::new(&model_dir, vec![file_name.clone()])
         .with_token_source(TokenSource::None)
+        .with_logging()
         .build()
         .await
     {
-        Ok(m) => m,
+        Ok(m) => {
+            log::info!("[chat] model loaded successfully");
+            m
+        }
         Err(e) => {
+            log::error!("[chat] model load failed: {e}");
             let _ = progress_tx.send(ChatProgress::Error(format!(
                 "Failed to load model \"{file_name}\": {e}"
             )));
