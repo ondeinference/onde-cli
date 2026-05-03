@@ -54,6 +54,13 @@ Use a very small Node launcher that:
 
 Good fit for users who already live in npm tooling.
 
+Important release detail:
+
+- the committed `npm/onde-cli/package.json` is a working file, not the publish-time source of truth
+- the release workflow rewrites the base package manifest with `npm/scripts/render-main-package.cjs`
+- platform package manifests are generated on the fly with `npm/scripts/render-platform-package.cjs`
+- the actual npm version comes from the release tag via `RELEASE_VERSION`, not from manually editing the committed npm manifest before publish
+
 ### PyPI
 
 Use `maturin` with `bindings = "bin"` so the native executable is what gets installed.
@@ -191,7 +198,7 @@ When cutting a release, update every user-facing distribution version that shoul
 At minimum, check:
 
 - Rust crate version
-- npm package version
+- npm release templates and workflow assumptions
 - npm lockfile version if committed
 - PyPI release version source
 - NuGet package version at pack time
@@ -201,6 +208,7 @@ At minimum, check:
 ## Common failure modes
 
 - wrapper version does not match the Rust release version
+- manually bumping the committed npm manifest and assuming that is what npm publishes
 - staged native binaries land in the wrong directory before packaging
 - package builds successfully but installs without the native binary
 - pub.dev package omits staged assets because gitignore excludes them

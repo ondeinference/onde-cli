@@ -1,6 +1,6 @@
 name: onde_cli
 description: Dart wrapper for the Onde Inference CLI with bundled native binaries for macOS, Linux, and Windows.
-version: 0.3.0
+version: 0.3.1
 homepage: https://ondeinference.com
 repository: https://github.com/ondeinference/onde-cli
 issue_tracker: https://github.com/ondeinference/onde-cli/issues
@@ -8,7 +8,7 @@ documentation: https://ondeinference.com
 publish_to: https://pub.dev
 
 environment:
-  sdk: '>=3.8.0 <4.0.0'
+  sdk: ">=3.8.0 <4.0.0"
 
 executables:
   onde: onde
