@@ -13,6 +13,7 @@
   <a href="https://apps.apple.com/se/developer/splitfire-ab/id1831430993"><img src="https://img.shields.io/badge/App%20Store-live-235843?style=flat-square&labelColor=17211D" alt="App Store"></a>
   <a href="https://www.npmjs.com/package/@ondeinference/cli"><img src="https://img.shields.io/npm/v/@ondeinference/cli?style=flat-square&labelColor=17211D&color=235843" alt="npm"></a>
   <a href="https://pypi.org/project/onde-cli/"><img src="https://img.shields.io/pypi/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="PyPI"></a>
+  <a href="https://www.nuget.org/packages/Onde.Cli"><img src="https://img.shields.io/nuget/v/Onde.Cli?style=flat-square&labelColor=17211D&color=235843" alt="NuGet"></a>
   <a href="https://crates.io/crates/onde-cli"><img src="https://img.shields.io/crates/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="Crates.io"></a>
 </p>
 
@@ -50,6 +51,12 @@ uv tool install onde-cli
 uv run onde
 # or with
 uvx --from onde-cli onde
+```
+
+### .NET tool
+
+```sh
+dotnet tool install --global Onde.Cli
 ```
 
 ### Pre-built binary
@@ -96,6 +103,8 @@ This opens the TUI. You can sign up or sign in right there.
 `onde` includes a LoRA fine-tuning pipeline for Qwen2, Qwen2.5, and Qwen3 models. It runs locally: Metal on Apple Silicon, CPU elsewhere. No cloud setup. No Python environment.
 
 The flow is straightforward: download a safetensors base model, fine-tune it with LoRA, merge the adapter back into the base weights, then export to GGUF for use in the Onde SDK.
+
+If you want a quick refresher on what the model is actually doing at inference time, Onde has a short note on the [forward pass](https://ondeinference.com/forward-pass).
 
 ### Training data format
 
