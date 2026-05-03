@@ -123,6 +123,24 @@ jobs:
       - name: Build .NET tool launcher
         run: dotnet build nuget/onde-cli/Onde.Cli.csproj --configuration Release
 
+  dart-package:
+    name: Dart pub package check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Dart SDK
+        uses: dart-lang/setup-dart@v1
+
+      - name: Get package dependencies
+        working-directory: pub/onde_cli
+        run: dart pub get
+
+      - name: Analyze Dart package
+        working-directory: pub/onde_cli
+        run: dart analyze
+
   build:
     name: Build (aarch64-apple-darwin)
     runs-on: macos-26
@@ -156,6 +174,7 @@ jobs:
       - test
       - check
       - dotnet-tool
+      - dart-package
       - build
     if: always()
     steps:
@@ -164,6 +183,7 @@ jobs:
           test "${{ needs.fmt.result }}"         = "success"
           test "${{ needs.clippy.result }}"      = "success"
           test "${{ needs.test.result }}"        = "success"
-          test "${{ needs.check.result }}"       = "success"
-          test "${{ needs.dotnet-tool.result }}" = "success"
-          test "${{ needs.build.result }}"       = "success"
+          test "${{ needs.check.result }}"        = "success"
+          test "${{ needs.dotnet-tool.result }}"  = "success"
+          test "${{ needs.dart-package.result }}" = "success"
+          test "${{ needs.build.result }}"        = "success"

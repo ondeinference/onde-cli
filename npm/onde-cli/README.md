@@ -12,6 +12,7 @@
   <a href="https://www.npmjs.com/package/@ondeinference/cli"><img src="https://img.shields.io/npm/v/@ondeinference/cli?style=flat-square&labelColor=17211D&color=235843" alt="npm"></a>
   <a href="https://crates.io/crates/onde-cli"><img src="https://img.shields.io/crates/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="crates.io"></a>
   <a href="https://pypi.org/project/onde-cli/"><img src="https://img.shields.io/pypi/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="PyPI"></a>
+  <a href="https://pub.dev/packages/onde_cli"><img src="https://img.shields.io/pub/v/onde_cli?style=flat-square&labelColor=17211D&color=235843" alt="pub.dev"></a>
   <a href="https://www.nuget.org/packages/Onde.Cli"><img src="https://img.shields.io/nuget/v/Onde.Cli?style=flat-square&labelColor=17211D&color=235843" alt="NuGet"></a>
   <a href="https://ondeinference.com"><img src="https://img.shields.io/badge/ondeinference.com-235843?style=flat-square&labelColor=17211D" alt="Website"></a>
 </p>
@@ -39,6 +40,7 @@ It works on:
 | Homebrew | `brew install ondeinference/homebrew-tap/onde` |
 | pip | `pip install onde-cli` |
 | uv | `uv tool install onde-cli` |
+| Dart pub | `dart pub global activate onde_cli` |
 | .NET tool | `dotnet tool install --global Onde.Cli` |
 | Cargo | `cargo install onde-cli` |
 
