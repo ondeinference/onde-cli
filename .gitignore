@@ -1,3 +1,17 @@
 /target
 /pypi/dist
+
+# Local .NET CLI state
+/.dotnet/
+
+# Generated NuGet release artifacts
+/nuget/dist/
+/nuget/onde-cli/bin/
+/nuget/onde-cli/obj/
+/nuget/onde-cli/native/
+
+# Generated Dart pub package artifacts
+/pub/onde_cli/.dart_tool/
+/pub/onde_cli/pubspec.lock
+
 .env
