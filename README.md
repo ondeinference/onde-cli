@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/ondeinference/onde/main/assets/onde-inference-logo.svg" alt="Onde Inference" width="96">
 </p>
 
-<h1 align="center">onde</h1>
+<h1 align="center">Onde Inference CLI</h1>
 
 <p align="center">
   Command-line interface for <a href="https://ondeinference.com">Onde Inference</a>.
