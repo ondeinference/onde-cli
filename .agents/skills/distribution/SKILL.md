@@ -91,6 +91,7 @@ Important details:
 - download the correct binary from GitHub Releases on first run
 - cache downloads under `~/.onde/cli`
 - keep the wrapper thin, the Rust binary is still the product
+- publish the pub.dev package only after the matching GitHub Release exists
 
 Good fit for Dart and Flutter developers who want the same CLI through familiar tooling.
 
@@ -153,6 +154,7 @@ Practical consequences:
 - use package-level ignore rules so local native staging does not leak into publish input
 - keep release asset names aligned with the GitHub Release workflow, because the launcher depends on them
 - treat `~/.onde/cli` as the local cache root for downloaded binaries
+- do not let the pub.dev workflow race ahead of GitHub Releases; dispatch it after `release-github.yml` has created the assets
 
 Run these during verification:
 
@@ -216,6 +218,7 @@ At minimum, check:
 - staged native binaries land in the wrong directory before packaging
 - package builds successfully but installs without the native binary
 - pub.dev launcher points at the wrong GitHub Release asset name or runtime id
+- pub.dev workflow publishes before the matching GitHub Release assets exist
 - pub.dev package still includes bundled binaries and blows the upload size limit
 - smoke test invokes a TUI-first binary in a way that does not make sense for CI
 - README badges and install commands drift out of sync with real package names

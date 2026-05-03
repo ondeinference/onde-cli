@@ -1,9 +1,6 @@
 name: pub.dev Release
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
