@@ -132,10 +132,6 @@ jobs:
           path: pub/onde_cli/native
           merge-multiple: true
 
-      - name: Stage generated native binaries
-        shell: bash
-        run: git add -f pub/onde_cli/native
-
       - name: Setup Dart SDK
         uses: dart-lang/setup-dart@v1
 
@@ -153,6 +149,16 @@ jobs:
                   lines[index] = f'version: {release_version}'
           pubspec.write_text('\n'.join(lines) + '\n')
           PY
+
+      - name: Create temporary clean git state
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f pub/onde_cli/native pub/onde_cli/pubspec.yaml
+          if ! git diff --cached --quiet; then
+            git commit -m "Stage pub.dev release assets for ${RELEASE_VERSION}"
+          fi
 
       - name: Get package dependencies
         working-directory: pub/onde_cli
@@ -194,10 +200,6 @@ jobs:
           path: pub/onde_cli/native
           merge-multiple: true
 
-      - name: Stage generated native binaries
-        shell: bash
-        run: git add -f pub/onde_cli/native
-
       - name: Setup Dart SDK
         uses: dart-lang/setup-dart@v1
 
@@ -226,6 +228,17 @@ jobs:
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create temporary clean git state
+        if: steps.pub-check.outputs.exists != 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f pub/onde_cli/native pub/onde_cli/pubspec.yaml
+          if ! git diff --cached --quiet; then
+            git commit -m "Stage pub.dev release assets for ${RELEASE_VERSION}"
           fi
 
       - name: Set up pub.dev credentials

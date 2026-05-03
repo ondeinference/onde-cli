@@ -156,6 +156,12 @@ Run these during verification:
 - `dart analyze pub/onde_cli`
 - `dart pub publish --dry-run --directory pub/onde_cli`
 
+One more gotcha:
+
+- pub.dev validation expects a clean git state
+- if CI stages native binaries into `pub/onde_cli/native/`, make a temporary local commit after staging those files and syncing `pubspec.yaml`
+- staging alone is not enough, because `dart pub publish --dry-run` will warn on modified checked-in files and fail the job
+
 ## NuGet-specific notes
 
 NuGet packaging is sensitive to path layout.
@@ -212,6 +218,7 @@ At minimum, check:
 - staged native binaries land in the wrong directory before packaging
 - package builds successfully but installs without the native binary
 - pub.dev package omits staged assets because gitignore excludes them
+- pub.dev dry-run fails because CI staged native files but never created a clean local commit
 - smoke test invokes a TUI-first binary in a way that does not make sense for CI
 - README badges and install commands drift out of sync with real package names
 
