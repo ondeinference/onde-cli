@@ -10,4 +10,8 @@
 /nuget/onde-cli/obj/
 /nuget/onde-cli/native/
 
+# Generated Dart pub package artifacts
+/pub/onde_cli/.dart_tool/
+/pub/onde_cli/pubspec.lock
+
 .env
