@@ -1,9 +1,8 @@
 fn main() {
-    // Load .env if present (local dev). In CI the vars are injected directly
-    // as environment variables, so this is a no-op there.
+    // Load .env for local builds. In CI these vars already come from the environment.
     let _ = dotenvy::dotenv();
 
-    // Required variables — build fails if missing.
+    // These must be present or the build should fail.
     for var in [
         "ONDE_APP_ID",
         "ONDE_APP_SECRET",
@@ -25,7 +24,7 @@ fn main() {
         }
     }
 
-    // Optional variables — baked in when present, empty string when absent.
+    // Optional vars: bake them in when present, use an empty string otherwise.
     {
         let var = "HF_TOKEN";
         println!("cargo:rerun-if-env-changed={var}");
@@ -34,12 +33,12 @@ fn main() {
                 println!("cargo:rustc-env={var}={val}");
             }
             Err(_) => {
-                // Forward an empty value so env!() still compiles.
+                // Keep env!() happy even when the token is missing.
                 println!("cargo:rustc-env={var}=");
             }
         }
     }
 
-    // Rebuild whenever .env itself changes.
+    // Re-run the build script if .env changes.
     println!("cargo:rerun-if-changed=.env");
 }

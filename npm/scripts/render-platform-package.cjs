@@ -17,7 +17,7 @@ const packageDirectory = path.resolve(npmRoot, packageName);
 
 fs.mkdirSync(packageDirectory, { recursive: true });
 
-// Variable map for template interpolation
+// Values we drop into the templates.
 const vars = {
   node_pkg: packageName,
   node_version: version,
@@ -26,7 +26,7 @@ const vars = {
 };
 
 /**
- * Replace every `${key}` in the template with the corresponding value from vars.
+ * Replace `${key}` placeholders in the template with values from vars.
  */
 function interpolate(template, variables) {
   return template.replace(/\$\{(\w+)\}/g, (match, key) => {
@@ -35,7 +35,7 @@ function interpolate(template, variables) {
   });
 }
 
-// Read and interpolate package.json.tmpl
+// Read package.json.tmpl and fill it in.
 const packageTemplate = fs.readFileSync(
   path.join(npmRoot, "package.json.tmpl"),
   "utf-8",
@@ -45,7 +45,7 @@ fs.writeFileSync(
   interpolate(packageTemplate, vars),
 );
 
-// Read and interpolate README.md.tmpl
+// Read README.md.tmpl and fill it in.
 const readmeTemplate = fs.readFileSync(
   path.join(npmRoot, "README.md.tmpl"),
   "utf-8",

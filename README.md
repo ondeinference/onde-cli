@@ -2,10 +2,10 @@
   <img src="https://raw.githubusercontent.com/ondeinference/onde/main/assets/onde-inference-logo.svg" alt="Onde Inference" width="96">
 </p>
 
-<h1 align="center">onde</h1>
+<h1 align="center">Onde Inference CLI</h1>
 
 <p align="center">
-  Command-line interface for <a href="https://ondeinference.com">Onde Inference</a>.
+  Command-line interface for <a href="https://ondeinference.com/">Onde Inference</a>.
 </p>
 
 <p align="center">
@@ -13,6 +13,8 @@
   <a href="https://apps.apple.com/se/developer/splitfire-ab/id1831430993"><img src="https://img.shields.io/badge/App%20Store-live-235843?style=flat-square&labelColor=17211D" alt="App Store"></a>
   <a href="https://www.npmjs.com/package/@ondeinference/cli"><img src="https://img.shields.io/npm/v/@ondeinference/cli?style=flat-square&labelColor=17211D&color=235843" alt="npm"></a>
   <a href="https://pypi.org/project/onde-cli/"><img src="https://img.shields.io/pypi/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="PyPI"></a>
+  <a href="https://pub.dev/packages/onde_cli"><img src="https://img.shields.io/pub/v/onde_cli?style=flat-square&labelColor=17211D&color=235843" alt="pub.dev"></a>
+  <a href="https://www.nuget.org/packages/Onde.Cli"><img src="https://img.shields.io/nuget/v/Onde.Cli?style=flat-square&labelColor=17211D&color=235843" alt="NuGet"></a>
   <a href="https://crates.io/crates/onde-cli"><img src="https://img.shields.io/crates/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="Crates.io"></a>
 </p>
 
@@ -26,7 +28,7 @@ Manage your Onde Inference account, fine-tune local models, and export them to G
 
 ## Install
 
-[Install onde-cli](https://github.com/ondeinference/onde-cli) with your favorite tool.
+[Install onde-cli](https://github.com/ondeinference/onde-cli) with your favorite tool. For package docs and the full install matrix, see <https://ondeinference.com/cli>.
 
 ### npm
 
@@ -50,6 +52,18 @@ uv tool install onde-cli
 uv run onde
 # or with
 uvx --from onde-cli onde
+```
+
+### .NET tool
+
+```sh
+dotnet tool install --global Onde.Cli
+```
+
+### Dart pub global
+
+```sh
+dart pub global activate onde_cli
 ```
 
 ### Pre-built binary
@@ -97,6 +111,8 @@ This opens the TUI. You can sign up or sign in right there.
 
 The flow is straightforward: download a safetensors base model, fine-tune it with LoRA, merge the adapter back into the base weights, then export to GGUF for use in the Onde SDK.
 
+If you want a quick refresher on what the model is actually doing at inference time, Onde has a short note on the [forward pass](https://ondeinference.com/forward-pass).
+
 ### Training data format
 
 Each line should be one complete conversation in Qwen's chat template:
@@ -136,7 +152,7 @@ For rank 8 on a 0.6B model, the adapter is about 1.5 MB. From the fine-tune comp
 - `m` to merge the adapter into the base model
 - `g` to export the merged model to GGUF
 
-The resulting GGUF loads directly in the Onde SDK for on-device inference.
+The resulting GGUF loads directly in the [Onde SDK](https://ondeinference.com/sdk) for on-device AI inference.
 
 ### Supported base models
 

@@ -12,17 +12,17 @@ use {
     tokio::sync::mpsc,
 };
 
-// ui.rs imports OndeApp and OndeModel from here instead of depending on the SDK directly.
+// ui.rs pulls OndeApp and OndeModel from here so it does not have to depend on the SDK directly.
 pub use smbcloud_gresiq_sdk::{OndeApp, OndeModel};
 
-// Onde is a tenant in smbCloud Auth. These identify this CLI to the backend.
-// smbCloud Auth credentials — baked in at compile time from the environment.
-// Set these in .env for local builds; inject as secrets in CI.
+// Onde is a tenant in smbCloud Auth. These values identify the CLI to the backend.
+// They are baked in at compile time from the environment.
+// Put them in .env for local builds, or inject them as CI secrets.
 pub(crate) const ONDE_APP_ID: &str = env!("ONDE_APP_ID");
 pub(crate) const ONDE_APP_SECRET: &str = env!("ONDE_APP_SECRET");
 pub(crate) const HF_TOKEN: &str = env!("HF_TOKEN");
 
-// GresIQ API credentials for the Onde tenant — distinct from Auth above.
+// GresIQ credentials for the same tenant. These are separate from Auth.
 pub(crate) const GRESIQ_API_KEY: &str = env!("GRESIQ_API_KEY");
 pub(crate) const GRESIQ_API_SECRET: &str = env!("GRESIQ_API_SECRET");
 
@@ -100,9 +100,9 @@ pub struct AdapterEntry {
 impl AdapterEntry {
     /// Classify the location of this artifact for display purposes.
     ///
-    /// - `"Onde Inference"` — inside the shared App Group container
-    /// - `"HF Cache"` — inside `~/.cache/huggingface/hub` or `$HF_HOME`
-    /// - The raw path string — anything else (custom / local export)
+    /// - `"Onde Inference"`: inside the shared App Group container
+    /// - `"HF Cache"`: inside `~/.cache/huggingface/hub` or `$HF_HOME`
+    /// - the raw path string: anything else, usually a custom or local export
     pub fn location_label(&self) -> String {
         let path_str = self.path.to_string_lossy();
 
@@ -121,7 +121,7 @@ impl AdapterEntry {
             return "HF Cache".to_string();
         }
 
-        // Custom / local path — show the directory
+        // For custom or local paths, just show the directory.
         self.path
             .parent()
             .map(|p| p.to_string_lossy().to_string())
@@ -130,11 +130,11 @@ impl AdapterEntry {
 
     /// Whether this GGUF should show the upload-to-HuggingFace UI.
     ///
-    /// Only locally fine-tuned / exported models (not from a known HF cache)
-    /// are candidates for uploading — models already on HF don't need it.
+    /// Only local fine-tune outputs should get the upload UI.
+    /// If the model already came from a known HF cache, skip it.
     pub fn is_uploadable(&self) -> bool {
         let path_str = self.path.to_string_lossy();
-        // Not in the Onde app group (those are downloaded from HF)
+        // App Group files were downloaded from HF, so skip them.
         if path_str.contains("group.com.ondeinference.apps") {
             return false;
         }

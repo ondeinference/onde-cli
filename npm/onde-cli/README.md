@@ -5,13 +5,15 @@
 <h1 align="center">@ondeinference/cli</h1>
 
 <p align="center">
-  A terminal app for your Onde Inference account, plus local model fine-tuning.
+  A terminal app for your <a href="https://ondeinference.com/">Onde Inference</a> account, plus local model fine-tuning.
 </p>
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@ondeinference/cli"><img src="https://img.shields.io/npm/v/@ondeinference/cli?style=flat-square&labelColor=17211D&color=235843" alt="npm"></a>
   <a href="https://crates.io/crates/onde-cli"><img src="https://img.shields.io/crates/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="crates.io"></a>
   <a href="https://pypi.org/project/onde-cli/"><img src="https://img.shields.io/pypi/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="PyPI"></a>
+  <a href="https://pub.dev/packages/onde_cli"><img src="https://img.shields.io/pub/v/onde_cli?style=flat-square&labelColor=17211D&color=235843" alt="pub.dev"></a>
+  <a href="https://www.nuget.org/packages/Onde.Cli"><img src="https://img.shields.io/nuget/v/Onde.Cli?style=flat-square&labelColor=17211D&color=235843" alt="NuGet"></a>
   <a href="https://ondeinference.com"><img src="https://img.shields.io/badge/ondeinference.com-235843?style=flat-square&labelColor=17211D" alt="Website"></a>
 </p>
 
@@ -38,6 +40,8 @@ It works on:
 | Homebrew | `brew install ondeinference/homebrew-tap/onde` |
 | pip | `pip install onde-cli` |
 | uv | `uv tool install onde-cli` |
+| Dart pub | `dart pub global activate onde_cli` |
+| .NET tool | `dotnet tool install --global Onde.Cli` |
 | Cargo | `cargo install onde-cli` |
 
 ---
@@ -82,6 +86,8 @@ Training runs locally:
 
 So yes, no cloud training setup and no Python environment to babysit.
 
+If you want a quick mental model for what the network is doing once it starts running, Onde has a short write-up on the [forward pass](https://ondeinference.com/forward-pass).
+
 ### Supported base models
 
 | Model | Size |
@@ -116,7 +122,7 @@ A rank-8 adapter for the 0.6B model is about 1.5 MB, so the output stays pretty 
 - Press `m` to merge the adapter into the base weights.
 - Press `g` to export the merged model to GGUF.
 
-The exported file loads directly in the [Onde SDK](https://ondeinference.com) for on-device inference.
+The exported file loads directly in the [Onde SDK](https://ondeinference.com/sdk) for on-device inference.
 
 ---
 

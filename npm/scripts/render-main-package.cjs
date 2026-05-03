@@ -16,7 +16,7 @@ const vars = {
 };
 
 /**
- * Replace every `${key}` in the template with the corresponding value from vars.
+ * Replace `${key}` placeholders in the template with values from vars.
  */
 function interpolate(template, variables) {
   return template.replace(/\$\{(\w+)\}/g, (match, key) => {
@@ -25,7 +25,7 @@ function interpolate(template, variables) {
   });
 }
 
-// Read and interpolate package-main.json.tmpl
+// Read package-main.json.tmpl and fill in the release version.
 const template = fs.readFileSync(
   path.join(npmRoot, "package-main.json.tmpl"),
   "utf-8",

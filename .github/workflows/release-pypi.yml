@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.1.1)"
+        description: "Release tag (e.g. v0.3.1)"
         required: true
 
 permissions:
@@ -52,12 +52,12 @@ jobs:
               OS: windows-2022,
               TARGET: aarch64-pc-windows-msvc,
             }
-          - { NAME: darwin-x64, OS: macos-26-intel, TARGET: x86_64-apple-darwin }
           - {
-              NAME: darwin-arm64,
-              OS: macos-26,
-              TARGET: aarch64-apple-darwin,
+              NAME: darwin-x64,
+              OS: macos-26-intel,
+              TARGET: x86_64-apple-darwin,
             }
+          - { NAME: darwin-arm64, OS: macos-26, TARGET: aarch64-apple-darwin }
     steps:
       - name: Checkout
         uses: actions/checkout@v6

@@ -5,7 +5,7 @@
 <h1 align="center">onde</h1>
 
 <p align="center">
-  <strong>A terminal app for managing Onde Inference apps and fine-tuning models locally.</strong><br>
+  <strong>A terminal app for managing <a href="https://ondeinference.com/">Onde Inference</a> apps and fine-tuning models locally.</strong><br>
   Sign in, assign models, and train adapters without bouncing between browser tabs.
 </p>
 
@@ -13,6 +13,8 @@
   <a href="https://ondeinference.com"><img src="https://img.shields.io/badge/ondeinference.com-235843?style=flat-square&labelColor=17211D" alt="Website"></a>
   <a href="https://pypi.org/project/onde-cli/"><img src="https://img.shields.io/pypi/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="PyPI"></a>
   <a href="https://www.npmjs.com/package/@ondeinference/cli"><img src="https://img.shields.io/npm/v/@ondeinference/cli?style=flat-square&labelColor=17211D&color=235843" alt="npm"></a>
+  <a href="https://pub.dev/packages/onde_cli"><img src="https://img.shields.io/pub/v/onde_cli?style=flat-square&labelColor=17211D&color=235843" alt="pub.dev"></a>
+  <a href="https://www.nuget.org/packages/Onde.Cli"><img src="https://img.shields.io/nuget/v/Onde.Cli?style=flat-square&labelColor=17211D&color=235843" alt="NuGet"></a>
   <a href="https://crates.io/crates/onde-cli"><img src="https://img.shields.io/crates/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="Crates.io"></a>
   <a href="https://github.com/ondeinference/onde-cli/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-235843?style=flat-square&labelColor=17211D" alt="License"></a>
 </p>
@@ -33,7 +35,7 @@
 pip install onde-cli
 ```
 
-That installs the native `onde` binary for your platform. No compiler setup, no Node.js, no extra runtime to babysit.
+That installs the native `onde` binary for your platform. No compiler setup, no Node.js, no extra runtime to babysit. For package docs and the full install matrix, see <https://ondeinference.com/cli>.
 
 ## What you get
 
@@ -111,6 +113,8 @@ Training runs locally:
 
 No cloud training job. No Python environment. No notebook setup spiral.
 
+If you want the short version of what happens inside the model at inference time, Onde also has a plain-English note on the [forward pass](https://ondeinference.com/forward-pass).
+
 ### Supported base models
 
 | Model | Size |
@@ -153,7 +157,7 @@ Once the run finishes:
 - press `m` to merge the adapter into the base weights
 - press `g` to export the merged model to GGUF
 
-The exported file loads directly in the [Onde SDK](https://ondeinference.com) for on-device inference.
+The exported file loads directly in the [Onde SDK](https://ondeinference.com/sdk) for on-device AI inference.
 
 ## Other ways to install
 
@@ -162,6 +166,8 @@ The exported file loads directly in the [Onde SDK](https://ondeinference.com) fo
 | npm | `npm install -g @ondeinference/cli` |
 | Homebrew | `brew install ondeinference/homebrew-tap/onde` |
 | uv | `uv tool install onde-cli` |
+| Dart pub | `dart pub global activate onde_cli` |
+| .NET tool | `dotnet tool install --global Onde.Cli` |
 | Cargo | `cargo install onde-cli` |
 
 ### Build from source
