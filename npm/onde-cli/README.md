@@ -5,7 +5,7 @@
 <h1 align="center">@ondeinference/cli</h1>
 
 <p align="center">
-  A terminal app for your Onde Inference account, plus local model fine-tuning.
+  A terminal app for your <a href="https://ondeinference.com/">Onde Inference</a> account, plus local model fine-tuning.
 </p>
 
 <p align="center">
@@ -122,7 +122,7 @@ A rank-8 adapter for the 0.6B model is about 1.5 MB, so the output stays pretty 
 - Press `m` to merge the adapter into the base weights.
 - Press `g` to export the merged model to GGUF.
 
-The exported file loads directly in the [Onde SDK](https://ondeinference.com) for on-device inference.
+The exported file loads directly in the [Onde SDK](https://ondeinference.com/sdk) for on-device inference.
 
 ---
 

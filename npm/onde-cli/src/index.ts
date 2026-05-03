@@ -3,9 +3,9 @@
 import { spawnSync } from "child_process";
 
 /**
- * Returns the executable path which is located inside node_modules
- * The naming convention is cli-OS-ARCH
- * If the platform is win32 or cygwin, executable will include a .exe extension.
+ * Return the bundled executable path from node_modules.
+ * Package names follow the cli-OS-ARCH pattern.
+ * Windows builds use the .exe suffix.
  * @see https://nodejs.org/api/os.html#osarch
  * @see https://nodejs.org/api/os.html#osplatform
  * @example "x/xx/node_modules/cli-darwin-arm64"
@@ -30,7 +30,7 @@ function getExePath() {
 }
 
 /**
- * Runs the application with args using nodejs spawn
+ * Run the bundled executable with the current CLI args.
  */
 function run() {
     const args = process.argv.slice(2);

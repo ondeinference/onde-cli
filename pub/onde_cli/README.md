@@ -14,7 +14,7 @@ dart pub global activate onde_cli
 onde
 ```
 
-That opens the Onde terminal UI for account management, app setup, and local model fine-tuning.
+That opens the Onde terminal UI for account management, app setup, and local model fine-tuning. For package details, platform notes, and the full install matrix, see <https://ondeinference.com/cli>.
 
 If you want a quick background read on the inference side, Onde has a short note on the [forward pass](https://ondeinference.com/forward-pass).
 
