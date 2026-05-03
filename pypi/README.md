@@ -13,6 +13,7 @@
   <a href="https://ondeinference.com"><img src="https://img.shields.io/badge/ondeinference.com-235843?style=flat-square&labelColor=17211D" alt="Website"></a>
   <a href="https://pypi.org/project/onde-cli/"><img src="https://img.shields.io/pypi/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="PyPI"></a>
   <a href="https://www.npmjs.com/package/@ondeinference/cli"><img src="https://img.shields.io/npm/v/@ondeinference/cli?style=flat-square&labelColor=17211D&color=235843" alt="npm"></a>
+  <a href="https://www.nuget.org/packages/Onde.Cli"><img src="https://img.shields.io/nuget/v/Onde.Cli?style=flat-square&labelColor=17211D&color=235843" alt="NuGet"></a>
   <a href="https://crates.io/crates/onde-cli"><img src="https://img.shields.io/crates/v/onde-cli?style=flat-square&labelColor=17211D&color=235843" alt="Crates.io"></a>
   <a href="https://github.com/ondeinference/onde-cli/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-235843?style=flat-square&labelColor=17211D" alt="License"></a>
 </p>
@@ -111,6 +112,8 @@ Training runs locally:
 
 No cloud training job. No Python environment. No notebook setup spiral.
 
+If you want the short version of what happens inside the model at inference time, Onde also has a plain-English note on the [forward pass](https://ondeinference.com/forward-pass).
+
 ### Supported base models
 
 | Model | Size |
@@ -162,6 +165,7 @@ The exported file loads directly in the [Onde SDK](https://ondeinference.com) fo
 | npm | `npm install -g @ondeinference/cli` |
 | Homebrew | `brew install ondeinference/homebrew-tap/onde` |
 | uv | `uv tool install onde-cli` |
+| .NET tool | `dotnet tool install --global Onde.Cli` |
 | Cargo | `cargo install onde-cli` |
 
 ### Build from source

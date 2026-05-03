@@ -1,0 +1,4 @@
+dist/
+onde-cli/bin/
+onde-cli/obj/
+onde-cli/native/

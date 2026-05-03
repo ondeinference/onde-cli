@@ -108,6 +108,21 @@ jobs:
           GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
+  dotnet-tool:
+    name: .NET tool launcher build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build .NET tool launcher
+        run: dotnet build nuget/onde-cli/Onde.Cli.csproj --configuration Release
+
   build:
     name: Build (aarch64-apple-darwin)
     runs-on: macos-26
@@ -140,13 +155,15 @@ jobs:
       - clippy
       - test
       - check
+      - dotnet-tool
       - build
     if: always()
     steps:
       - name: Verify all required jobs succeeded
         run: |
-          test "${{ needs.fmt.result }}"    = "success"
-          test "${{ needs.clippy.result }}" = "success"
-          test "${{ needs.test.result }}"   = "success"
-          test "${{ needs.check.result }}"  = "success"
-          test "${{ needs.build.result }}"  = "success"
+          test "${{ needs.fmt.result }}"         = "success"
+          test "${{ needs.clippy.result }}"      = "success"
+          test "${{ needs.test.result }}"        = "success"
+          test "${{ needs.check.result }}"       = "success"
+          test "${{ needs.dotnet-tool.result }}" = "success"
+          test "${{ needs.build.result }}"       = "success"

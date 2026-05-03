@@ -1,3 +1,13 @@
 /target
 /pypi/dist
+
+# Local .NET CLI state
+/.dotnet/
+
+# Generated NuGet release artifacts
+/nuget/dist/
+/nuget/onde-cli/bin/
+/nuget/onde-cli/obj/
+/nuget/onde-cli/native/
+
 .env
