@@ -83,6 +83,11 @@ struct ModelConfig {
     max_position_embeddings: usize,
     #[serde(default)]
     tie_word_embeddings: bool,
+    /// HuggingFace model type, e.g. "qwen2" or "qwen3".
+    /// Kept for future architecture-specific logic.
+    #[allow(dead_code)]
+    #[serde(default = "default_model_type")]
+    model_type: String,
 }
 
 fn default_rms_norm_eps() -> f64 {
@@ -93,6 +98,9 @@ fn default_rope_theta() -> f64 {
 }
 fn default_max_position_embeddings() -> usize {
     32768
+}
+fn default_model_type() -> String {
+    "qwen2".to_string()
 }
 
 #[derive(serde::Deserialize)]
@@ -148,6 +156,17 @@ struct AddedToken {
 const GGUF_MAGIC: u32 = 0x46554747;
 const GGUF_VERSION: u32 = 3;
 const ALIGNMENT: u64 = 32;
+
+/// Standard Qwen ChatML template used as a fallback when `tokenizer_config.json`
+/// does not provide one. Matches the template shipped in Bartowski's Qwen GGUFs.
+const QWEN_CHATML_TEMPLATE: &str = concat!(
+    "{%- for message in messages %}",
+    "{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}",
+    "{%- endfor %}",
+    "{%- if add_generation_prompt %}",
+    "{{'<|im_start|>assistant\n'}}",
+    "{%- endif %}",
+);
 
 // GGUF tensor type IDs
 const GGUF_TYPE_F32: u32 = 0;
@@ -266,6 +285,11 @@ fn map_tensor_name(hf_name: &str) -> Option<String> {
         "self_attn.k_proj.weight" => "attn_k.weight",
         "self_attn.v_proj.weight" => "attn_v.weight",
         "self_attn.o_proj.weight" => "attn_output.weight",
+        // Bias tensors (present in Qwen2/2.5, absent in Qwen3)
+        "self_attn.q_proj.bias" => "attn_q.bias",
+        "self_attn.k_proj.bias" => "attn_k.bias",
+        "self_attn.v_proj.bias" => "attn_v.bias",
+        // QK-Norm (Qwen3)
         "self_attn.q_norm.weight" => "attn_q_norm.weight",
         "self_attn.k_norm.weight" => "attn_k_norm.weight",
         "mlp.gate_proj.weight" => "ffn_gate.weight",
@@ -459,6 +483,47 @@ fn run_gguf_export(
     let tok: TokenizerJson =
         serde_json::from_str(&tok_text).context("failed to parse tokenizer.json")?;
 
+    // Read the chat template from tokenizer_config.json.
+    // This is needed by mistral.rs / llama.cpp to format multi-turn conversations.
+    //
+    // The field can be either:
+    //   - a plain string (Qwen2/2.5)
+    //   - an array of {"name": "...", "template": "..."} objects (Qwen3)
+    //
+    // When it's an array, pick the "default" entry, or fall back to the first.
+    // If the file is missing or the field is absent, use the standard Qwen
+    // ChatML template so the GGUF is always loadable for chat.
+    let chat_template: String = {
+        let tok_config_path = config.model_dir.join("tokenizer_config.json");
+        let from_file = std::fs::read_to_string(&tok_config_path)
+            .ok()
+            .and_then(|text| {
+                let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+                let ct = v.get("chat_template")?;
+
+                // Plain string
+                if let Some(s) = ct.as_str() {
+                    return Some(s.to_string());
+                }
+
+                // Array of objects — pick "default", else first entry
+                if let Some(arr) = ct.as_array() {
+                    let default = arr.iter().find(|entry| {
+                        entry.get("name").and_then(|n| n.as_str()) == Some("default")
+                    });
+                    let chosen = default.or_else(|| arr.first());
+                    return chosen
+                        .and_then(|entry| entry.get("template"))
+                        .and_then(|t| t.as_str())
+                        .map(String::from);
+                }
+
+                None
+            });
+
+        from_file.unwrap_or_else(|| QWEN_CHATML_TEMPLATE.to_string())
+    };
+
     // Build ordered token list sorted by ID
     let vocab_size = model_cfg.vocab_size;
     let mut id_to_token: Vec<(u32, String)> =
@@ -576,6 +641,47 @@ fn run_gguf_export(
         });
     }
 
+    // Synthesize zero-filled Q/K/V bias tensors for layers that lack them.
+    //
+    // mistralrs expects `blk.{i}.attn_q.bias` etc. for the qwen2 architecture.
+    // Qwen2/2.5 have these in the safetensors; Qwen3 does not. Bartowski's
+    // llama.cpp-converted Qwen3 GGUFs include zero-filled bias tensors.
+    // We do the same here so the GGUF loads correctly for both model families.
+    let num_layers = model_cfg.num_hidden_layers;
+    let num_heads = model_cfg.num_attention_heads;
+    let num_kv_heads_usize = model_cfg.num_key_value_heads.unwrap_or(num_heads);
+    let head_dim = model_cfg.hidden_size / num_heads;
+
+    for i in 0..num_layers {
+        let bias_specs: &[(&str, usize)] = &[
+            (&format!("blk.{i}.attn_q.bias"), num_heads * head_dim),
+            (
+                &format!("blk.{i}.attn_k.bias"),
+                num_kv_heads_usize * head_dim,
+            ),
+            (
+                &format!("blk.{i}.attn_v.bias"),
+                num_kv_heads_usize * head_dim,
+            ),
+        ];
+        for (gguf_name, num_elements) in bias_specs {
+            if !entries.iter().any(|e| e.gguf_name == *gguf_name) {
+                // 1-D bias → always F32
+                let data_size = tensor_data_size(*num_elements, GGUF_TYPE_F32);
+                entries.push(TensorEntry {
+                    gguf_name: gguf_name.to_string(),
+                    hf_name: String::new(), // sentinel: no safetensors source
+                    dims: vec![*num_elements as u64],
+                    ndim: 1,
+                    num_elements: *num_elements,
+                    gguf_type: GGUF_TYPE_F32,
+                    data_size,
+                    offset: 0,
+                });
+            }
+        }
+    }
+
     // Compute offsets (relative to start of data section, 32-byte aligned)
     let mut data_offset: u64 = 0;
     for entry in &mut entries {
@@ -601,8 +707,16 @@ fn run_gguf_export(
         GgufDtype::Q8_0 => 7,
     };
 
+    // GGUF architecture string.
+    //
+    // In the llama.cpp / mistralrs GGUF ecosystem, Qwen3 is treated as a
+    // Qwen2-variant (same tensor layout, plus optional QK-norm). Bartowski's
+    // pre-built Qwen3 GGUFs all declare `general.architecture = "qwen2"`.
+    // Using "qwen3" would cause loaders to hang or reject the file.
+    let arch = "qwen2";
+
     // Count metadata KV entries
-    let num_metadata: u64 = 17; // all the keys listed below
+    let num_metadata: u64 = 18;
 
     // Pre-compute header + metadata + tensor info byte size
     let mut header_size: u64 = 0;
@@ -610,23 +724,24 @@ fn run_gguf_export(
     header_size += 4 + 4 + 8 + 8;
 
     // Metadata sizes
-    header_size += kv_string_size("general.architecture", "qwen2");
+    header_size += kv_string_size("general.architecture", arch);
     header_size += kv_string_size("general.name", "onde-finetuned");
     header_size += kv_u32_size("general.file_type");
-    header_size += kv_u32_size("qwen2.block_count");
-    header_size += kv_u32_size("qwen2.embedding_length");
-    header_size += kv_u32_size("qwen2.feed_forward_length");
-    header_size += kv_u32_size("qwen2.attention.head_count");
-    header_size += kv_u32_size("qwen2.attention.head_count_kv");
-    header_size += kv_f32_size("qwen2.attention.layer_norm_rms_epsilon");
-    header_size += kv_f32_size("qwen2.rope.freq_base");
-    header_size += kv_u32_size("qwen2.context_length");
+    header_size += kv_u32_size(&format!("{arch}.block_count"));
+    header_size += kv_u32_size(&format!("{arch}.embedding_length"));
+    header_size += kv_u32_size(&format!("{arch}.feed_forward_length"));
+    header_size += kv_u32_size(&format!("{arch}.attention.head_count"));
+    header_size += kv_u32_size(&format!("{arch}.attention.head_count_kv"));
+    header_size += kv_f32_size(&format!("{arch}.attention.layer_norm_rms_epsilon"));
+    header_size += kv_f32_size(&format!("{arch}.rope.freq_base"));
+    header_size += kv_u32_size(&format!("{arch}.context_length"));
     header_size += kv_string_size("tokenizer.ggml.model", "gpt2");
     header_size += kv_string_array_size("tokenizer.ggml.tokens", &tokens);
     header_size += kv_u32_array_size("tokenizer.ggml.token_type", &token_types);
     header_size += kv_string_array_size("tokenizer.ggml.merges", &merges);
     header_size += kv_u32_size("tokenizer.ggml.bos_token_id");
     header_size += kv_u32_size("tokenizer.ggml.eos_token_id");
+    header_size += kv_string_size("tokenizer.chat_template", &chat_template);
 
     // Tensor info sizes
     for entry in &entries {
@@ -657,39 +772,47 @@ fn run_gguf_export(
     write_u64(&mut w, num_metadata)?;
 
     // Metadata KV pairs
-    write_kv_string(&mut w, "general.architecture", "qwen2")?;
+    write_kv_string(&mut w, "general.architecture", arch)?;
     write_kv_string(&mut w, "general.name", "onde-finetuned")?;
     write_kv_u32(&mut w, "general.file_type", file_type_val)?;
     write_kv_u32(
         &mut w,
-        "qwen2.block_count",
+        &format!("{arch}.block_count"),
         model_cfg.num_hidden_layers as u32,
     )?;
     write_kv_u32(
         &mut w,
-        "qwen2.embedding_length",
+        &format!("{arch}.embedding_length"),
         model_cfg.hidden_size as u32,
     )?;
     write_kv_u32(
         &mut w,
-        "qwen2.feed_forward_length",
+        &format!("{arch}.feed_forward_length"),
         model_cfg.intermediate_size as u32,
     )?;
     write_kv_u32(
         &mut w,
-        "qwen2.attention.head_count",
+        &format!("{arch}.attention.head_count"),
         model_cfg.num_attention_heads as u32,
     )?;
-    write_kv_u32(&mut w, "qwen2.attention.head_count_kv", num_kv_heads)?;
-    write_kv_f32(
-        &mut w,
-        "qwen2.attention.layer_norm_rms_epsilon",
-        model_cfg.rms_norm_eps as f32,
-    )?;
-    write_kv_f32(&mut w, "qwen2.rope.freq_base", model_cfg.rope_theta as f32)?;
     write_kv_u32(
         &mut w,
-        "qwen2.context_length",
+        &format!("{arch}.attention.head_count_kv"),
+        num_kv_heads,
+    )?;
+    write_kv_f32(
+        &mut w,
+        &format!("{arch}.attention.layer_norm_rms_epsilon"),
+        model_cfg.rms_norm_eps as f32,
+    )?;
+    write_kv_f32(
+        &mut w,
+        &format!("{arch}.rope.freq_base"),
+        model_cfg.rope_theta as f32,
+    )?;
+    write_kv_u32(
+        &mut w,
+        &format!("{arch}.context_length"),
         model_cfg.max_position_embeddings as u32,
     )?;
     write_kv_string(&mut w, "tokenizer.ggml.model", "gpt2")?;
@@ -698,6 +821,7 @@ fn run_gguf_export(
     write_kv_string_array(&mut w, "tokenizer.ggml.merges", &merges)?;
     write_kv_u32(&mut w, "tokenizer.ggml.bos_token_id", bos_id)?;
     write_kv_u32(&mut w, "tokenizer.ggml.eos_token_id", eos_id)?;
+    write_kv_string(&mut w, "tokenizer.chat_template", &chat_template)?;
 
     // Tensor info entries
     for entry in &entries {
@@ -726,19 +850,22 @@ fn run_gguf_export(
             name: entry.gguf_name.clone(),
         });
 
-        // Load tensor from safetensors and convert to f32 on CPU
-        let tensor = safetensors
-            .load(&entry.hf_name, &Device::Cpu)
-            .with_context(|| format!("failed to load tensor {}", entry.hf_name))?;
-        let tensor_f32 = tensor
-            .to_dtype(candle_core::DType::F32)
-            .with_context(|| format!("failed to convert {} to f32", entry.hf_name))?;
-        let data = tensor_f32
-            .flatten_all()
-            .context("failed to flatten tensor")?;
-        let data = data
-            .to_vec1::<f32>()
-            .context("failed to extract f32 data from tensor")?;
+        // Load tensor data. Synthetic entries (empty hf_name) get zeros.
+        let data: Vec<f32> = if entry.hf_name.is_empty() {
+            vec![0.0f32; entry.num_elements]
+        } else {
+            let tensor = safetensors
+                .load(&entry.hf_name, &Device::Cpu)
+                .with_context(|| format!("failed to load tensor {}", entry.hf_name))?;
+            let tensor_f32 = tensor
+                .to_dtype(candle_core::DType::F32)
+                .with_context(|| format!("failed to convert {} to f32", entry.hf_name))?;
+            let flat = tensor_f32
+                .flatten_all()
+                .context("failed to flatten tensor")?;
+            flat.to_vec1::<f32>()
+                .context("failed to extract f32 data from tensor")?
+        };
 
         match entry.gguf_type {
             GGUF_TYPE_F32 => write_tensor_f32(&mut w, &data)?,

@@ -82,14 +82,15 @@ Good fit for .NET developers and CI environments that already use `dotnet tool i
 
 ### pub.dev
 
-Use a Dart package with a command entrypoint and a library that launches the bundled native binary.
+Use a Dart package with a command entrypoint and a library that launches the native binary.
 
 Important details:
 
 - executable command should stay `onde`
-- use `Isolate.resolvePackageUri` to find the installed package path
 - keep the runtime-id mapping explicit
-- do not overcomplicate the wrapper with platform-specific Dart APIs unless necessary
+- download the correct binary from GitHub Releases on first run
+- cache downloads under `~/.onde/cli`
+- keep the wrapper thin, the Rust binary is still the product
 
 Good fit for Dart and Flutter developers who want the same CLI through familiar tooling.
 
@@ -141,14 +142,17 @@ Safer checks:
 
 pub.dev behaves differently from npm and NuGet in one important way:
 
-- files ignored by git are generally excluded from publish input
+- large bundled binaries quickly hit package size limits
 
-That means staged native binaries for `pub/onde_cli/native/` must be available to the package at publish time.
+That makes the safest design a thin Dart launcher that downloads the right native binary from GitHub Releases at runtime instead of shipping every platform binary inside the package.
 
-Two practical consequences:
+Practical consequences:
 
-- do not ignore `pub/onde_cli/native/` in the root `.gitignore` if CI stages binaries there
-- a `.pubignore` can hide local tool noise, but do not hide the native payload you intend to publish
+- `pub/onde_cli/native/` should stay out of the published package
+- do not set `publish_to: https://pub.dev` in `pubspec.yaml`; omit `publish_to` for normal pub.dev publishing
+- use package-level ignore rules so local native staging does not leak into publish input
+- keep release asset names aligned with the GitHub Release workflow, because the launcher depends on them
+- treat `~/.onde/cli` as the local cache root for downloaded binaries
 
 Run these during verification:
 
@@ -211,7 +215,8 @@ At minimum, check:
 - manually bumping the committed npm manifest and assuming that is what npm publishes
 - staged native binaries land in the wrong directory before packaging
 - package builds successfully but installs without the native binary
-- pub.dev package omits staged assets because gitignore excludes them
+- pub.dev launcher points at the wrong GitHub Release asset name or runtime id
+- pub.dev package still includes bundled binaries and blows the upload size limit
 - smoke test invokes a TUI-first binary in a way that does not make sense for CI
 - README badges and install commands drift out of sync with real package names
 
