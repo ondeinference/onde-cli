@@ -228,12 +228,12 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Configure pub.dev token
+      - name: Set up pub.dev credentials
         if: steps.pub-check.outputs.exists != 'true'
         shell: bash
-        env:
-          PUB_DEV_PUBLISH_ACCESS_TOKEN: ${{ secrets.PUB_DEV_PUBLISH_ACCESS_TOKEN }}
-        run: dart pub token add https://pub.dev --env-var PUB_DEV_PUBLISH_ACCESS_TOKEN
+        run: |
+          mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/dart"
+          echo '${{ secrets.PUB_CREDENTIALS }}' > "${XDG_CONFIG_HOME:-$HOME/.config}/dart/pub-credentials.json"
 
       - name: Publish package
         if: steps.pub-check.outputs.exists != 'true'
