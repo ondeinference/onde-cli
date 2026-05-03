@@ -5,7 +5,7 @@
 <h1 align="center">onde</h1>
 
 <p align="center">
-  <strong>A terminal app for managing Onde Inference apps and fine-tuning models locally.</strong><br>
+  <strong>A terminal app for managing <a href="https://ondeinference.com/">Onde Inference</a> apps and fine-tuning models locally.</strong><br>
   Sign in, assign models, and train adapters without bouncing between browser tabs.
 </p>
 
@@ -35,7 +35,7 @@
 pip install onde-cli
 ```
 
-That installs the native `onde` binary for your platform. No compiler setup, no Node.js, no extra runtime to babysit.
+That installs the native `onde` binary for your platform. No compiler setup, no Node.js, no extra runtime to babysit. For package docs and the full install matrix, see <https://ondeinference.com/cli>.
 
 ## What you get
 
@@ -157,7 +157,7 @@ Once the run finishes:
 - press `m` to merge the adapter into the base weights
 - press `g` to export the merged model to GGUF
 
-The exported file loads directly in the [Onde SDK](https://ondeinference.com) for on-device inference.
+The exported file loads directly in the [Onde SDK](https://ondeinference.com/sdk) for on-device AI inference.
 
 ## Other ways to install
 

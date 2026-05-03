@@ -5,7 +5,7 @@
 <h1 align="center">Onde Inference CLI</h1>
 
 <p align="center">
-  Command-line interface for <a href="https://ondeinference.com">Onde Inference</a>.
+  Command-line interface for <a href="https://ondeinference.com/">Onde Inference</a>.
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@ Manage your Onde Inference account, fine-tune local models, and export them to G
 
 ## Install
 
-[Install onde-cli](https://github.com/ondeinference/onde-cli) with your favorite tool.
+[Install onde-cli](https://github.com/ondeinference/onde-cli) with your favorite tool. For package docs and the full install matrix, see <https://ondeinference.com/cli>.
 
 ### npm
 
@@ -152,7 +152,7 @@ For rank 8 on a 0.6B model, the adapter is about 1.5 MB. From the fine-tune comp
 - `m` to merge the adapter into the base model
 - `g` to export the merged model to GGUF
 
-The resulting GGUF loads directly in the Onde SDK for on-device inference.
+The resulting GGUF loads directly in the [Onde SDK](https://ondeinference.com/sdk) for on-device AI inference.
 
 ### Supported base models
 
