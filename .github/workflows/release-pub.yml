@@ -16,98 +16,11 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   PUB_PACKAGE_NAME: onde_cli
-  ONDE_APP_ID: ${{ secrets.ONDE_APP_ID }}
-  ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET }}
-  GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY }}
-  GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET }}
-  HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
 jobs:
-  build-native-binaries:
-    name: Build native binary (${{ matrix.build.NAME }})
-    runs-on: ${{ matrix.build.OS }}
-    strategy:
-      fail-fast: false
-      matrix:
-        build:
-          - {
-              NAME: linux-x64,
-              OS: ubuntu-latest,
-              TARGET: x86_64-unknown-linux-gnu,
-            }
-          - {
-              NAME: linux-arm64,
-              OS: ubuntu-24.04-arm,
-              TARGET: aarch64-unknown-linux-gnu,
-            }
-          - {
-              NAME: windows-x64,
-              OS: windows-2022,
-              TARGET: x86_64-pc-windows-msvc,
-            }
-          - {
-              NAME: windows-arm64,
-              OS: windows-2022,
-              TARGET: aarch64-pc-windows-msvc,
-            }
-          - {
-              NAME: darwin-x64,
-              OS: macos-26-intel,
-              TARGET: x86_64-apple-darwin,
-            }
-          - { NAME: darwin-arm64, OS: macos-26, TARGET: aarch64-apple-darwin }
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Read Rust toolchain
-        shell: bash
-        run: |
-          rust_toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml | head -n 1)"
-          if [ -z "$rust_toolchain" ]; then
-            echo "Failed to read Rust toolchain from rust-toolchain.toml" >&2
-            exit 1
-          fi
-          echo "RUST_TOOLCHAIN=${rust_toolchain}" >> "$GITHUB_ENV"
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
-        with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
-          targets: ${{ matrix.build.TARGET }}
-
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: pub-${{ matrix.build.TARGET }}
-
-      - name: Build binary
-        shell: bash
-        run: cargo build --locked --release --target ${{ matrix.build.TARGET }}
-
-      - name: Prepare artifact
-        shell: bash
-        run: |
-          executable_name="onde"
-          if [[ "${{ matrix.build.OS }}" == "windows-2022" ]]; then
-            executable_name="onde.exe"
-          fi
-
-          mkdir -p "pub-artifacts/native/${{ matrix.build.NAME }}"
-          cp "target/${{ matrix.build.TARGET }}/release/${executable_name}" "pub-artifacts/native/${{ matrix.build.NAME }}/${executable_name}"
-
-      - name: Upload native artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pub-native-${{ matrix.build.NAME }}
-          path: pub-artifacts/native
-
   verify-package:
     name: Verify Dart package
     runs-on: ubuntu-latest
-    needs: build-native-binaries
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -124,13 +37,6 @@ jobs:
             release_version="${release_version#v}"
           fi
           echo "RELEASE_VERSION=${release_version}" >> "$GITHUB_ENV"
-
-      - name: Download native artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: pub-native-*
-          path: pub/onde_cli/native
-          merge-multiple: true
 
       - name: Setup Dart SDK
         uses: dart-lang/setup-dart@v1
@@ -149,16 +55,6 @@ jobs:
                   lines[index] = f'version: {release_version}'
           pubspec.write_text('\n'.join(lines) + '\n')
           PY
-
-      - name: Create temporary clean git state
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f pub/onde_cli/native pub/onde_cli/pubspec.yaml
-          if ! git diff --cached --quiet; then
-            git commit -m "Stage pub.dev release assets for ${RELEASE_VERSION}"
-          fi
 
       - name: Get package dependencies
         working-directory: pub/onde_cli
@@ -193,13 +89,6 @@ jobs:
           fi
           echo "RELEASE_VERSION=${release_version}" >> "$GITHUB_ENV"
 
-      - name: Download native artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: pub-native-*
-          path: pub/onde_cli/native
-          merge-multiple: true
-
       - name: Setup Dart SDK
         uses: dart-lang/setup-dart@v1
 
@@ -228,17 +117,6 @@ jobs:
             echo "exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Create temporary clean git state
-        if: steps.pub-check.outputs.exists != 'true'
-        shell: bash
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f pub/onde_cli/native pub/onde_cli/pubspec.yaml
-          if ! git diff --cached --quiet; then
-            git commit -m "Stage pub.dev release assets for ${RELEASE_VERSION}"
           fi
 
       - name: Set up pub.dev credentials
