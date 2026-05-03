@@ -66,6 +66,8 @@ dotnet tool install --global Onde.Cli
 dart pub global activate onde_cli
 ```
 
+The Dart package is a thin launcher. On first run it downloads the right native binary into `~/.onde/cli`, then reuses the local copy.
+
 ### Pre-built binary
 
 Download a release from [GitHub Releases](https://github.com/ondeinference/onde-cli/releases):
@@ -170,6 +172,8 @@ You can search for any of these from the Models tab with `/`.
 ## Debug
 
 Logs are written to `~/.cache/onde/debug.log`.
+
+If you installed through pub.dev, the launcher cache lives under `~/.onde/cli`.
 
 ---
 

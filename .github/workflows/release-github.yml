@@ -190,3 +190,18 @@ jobs:
               }
             })
             console.log('Dispatched release-homebrew.yml for tag ${{ steps.tag.outputs.tag }}')
+
+      - name: Trigger pub.dev release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-pub.yml',
+              ref: 'main',
+              inputs: {
+                tag: '${{ steps.tag.outputs.tag }}'
+              }
+            })
+            console.log('Dispatched release-pub.yml for tag ${{ steps.tag.outputs.tag }}')
