@@ -287,39 +287,50 @@ fn run_finetune(
             // We avoid `backward_step` so we can clip gradients between the
             // backward pass and the AdamW update.  This preserves AdamW's
             // momentum / velocity state (unlike manually applying lr * grad).
-            let grads = loss.backward().context("backward pass")?;
+            let mut grads = loss.backward().context("backward pass")?;
 
-            // Compute global gradient L2 norm across all LoRA variables.
+            // Sanitize gradients before clipping. Backprop through the deep
+            // stack can produce non-finite (NaN/Inf) gradient *elements* even
+            // when the forward loss is finite; a single such element makes the
+            // whole tensor's L2 norm non-finite, which would defeat norm-based
+            // clipping (NaN > threshold is false → unclipped) and poison the
+            // AdamW moment estimates, corrupting every weight from that step on.
+            // Replace non-finite elements with zero so the remaining finite
+            // gradient still trains those parameters this step.
             let mut total_norm_sq: f64 = 0.0;
             for var in &lora_vars {
                 if let Some(grad) = grads.get(var.as_tensor()) {
-                    let norm_sq = grad
+                    let clean = sanitize_grad(grad).context("sanitizing gradient")?;
+                    let norm_sq = clean
                         .sqr()
                         .and_then(|t| t.sum_all())
                         .and_then(|t| t.to_scalar::<f32>())
                         .unwrap_or(0.0) as f64;
                     total_norm_sq += norm_sq;
+                    grads.insert(var.as_tensor(), clean);
                 }
             }
             let total_norm = total_norm_sq.sqrt();
 
+            // Nothing finite to learn from this step — skip the update so AdamW
+            // state stays clean.
+            if total_norm == 0.0 || !total_norm.is_finite() {
+                continue;
+            }
+
             // If the global norm exceeds the threshold, scale every gradient
             // down and insert the clipped version back into the GradStore.
-            let grads = if total_norm > max_grad_norm {
+            if total_norm > max_grad_norm {
                 let clip_coef = max_grad_norm / (total_norm + 1e-6);
-                let mut clipped_grads = grads;
                 for var in &lora_vars {
-                    if let Some(grad) = clipped_grads.get(var.as_tensor()) {
+                    if let Some(grad) = grads.get(var.as_tensor()) {
                         let clipped = (grad * clip_coef).context("clipping gradient")?;
-                        clipped_grads.insert(var.as_tensor(), clipped);
+                        grads.insert(var.as_tensor(), clipped);
                     }
                 }
-                clipped_grads
-            } else {
-                grads
-            };
+            }
 
-            // AdamW step with (possibly clipped) gradients — preserves
+            // AdamW step with sanitized, clipped gradients — preserves
             // first-moment and second-moment estimates.
             optimizer.step(&grads).context("optimizer step")?;
 
@@ -381,6 +392,17 @@ struct IndexJson {
 // ---------------------------------------------------------------------------
 // Private: tensor helpers
 // ---------------------------------------------------------------------------
+
+/// Replace every non-finite element (NaN, ±Inf) of a gradient tensor with zero.
+///
+/// Finite values satisfy `|x| <= 1e30` (well below `f32::MAX ≈ 3.4e38`); NaN
+/// fails the comparison (NaN compares false) and ±Inf exceeds the bound, so
+/// both map to zero while genuine gradients pass through unchanged.
+fn sanitize_grad(grad: &Tensor) -> candle_core::Result<Tensor> {
+    let finite = grad.abs()?.le(1e30f64)?;
+    let zeros = grad.zeros_like()?;
+    finite.where_cond(grad, &zeros)
+}
 
 /// RMS layer normalisation: `x / rms(x) * weight`.
 ///
@@ -644,7 +666,8 @@ impl TransformerLayer {
         let scale = 1.0 / (self.head_dim as f64).sqrt();
         let attn_weights = (q.matmul(&k.transpose(2, 3)?)? * scale)?;
 
-        // Causal mask: add -1e9 to positions the query must not attend to.
+        // Causal mask: add a large negative bias to positions the query must
+        // not attend to.
         let device = x.device();
         let tril =
             Tensor::tril2(seq, DType::F32, device)?.broadcast_as((b, self.num_heads, seq, seq))?;

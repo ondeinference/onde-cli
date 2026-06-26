@@ -73,6 +73,11 @@ struct ModelConfig {
     num_hidden_layers: usize,
     num_attention_heads: usize,
     num_key_value_heads: Option<usize>,
+    /// Per-head attention dimension. Decoupled from `hidden_size / num_attention_heads`
+    /// in Qwen3 (e.g. Qwen3-0.6B: hidden_size 1024, 16 heads, but head_dim 128).
+    /// Absent in Qwen2/2.5 configs, where it equals `hidden_size / num_attention_heads`.
+    #[serde(default)]
+    head_dim: Option<usize>,
     intermediate_size: usize,
     vocab_size: usize,
     #[serde(default = "default_rms_norm_eps")]
@@ -175,6 +180,7 @@ const GGUF_TYPE_Q8_0: u32 = 8;
 
 // GGUF metadata value type IDs
 const GGUF_META_U32: u32 = 4;
+const GGUF_META_INT32: u32 = 5;
 const GGUF_META_F32: u32 = 6;
 const GGUF_META_STRING: u32 = 8;
 const GGUF_META_ARRAY: u32 = 9;
@@ -229,13 +235,16 @@ fn write_kv_string_array(w: &mut impl Write, key: &str, vals: &[String]) -> std:
     Ok(())
 }
 
-fn write_kv_u32_array(w: &mut impl Write, key: &str, vals: &[u32]) -> std::io::Result<()> {
+/// Write an array of signed 32-bit integers. GGUF declares `token_type` as an
+/// INT32 array; llama.cpp / mistral.rs read it with `to_i32()` and reject a
+/// UINT32-typed array, so the element type tag must be INT32 (not U32).
+fn write_kv_i32_array(w: &mut impl Write, key: &str, vals: &[i32]) -> std::io::Result<()> {
     write_gguf_string(w, key)?;
     write_u32(w, GGUF_META_ARRAY)?;
-    write_u32(w, GGUF_META_U32)?;
+    write_u32(w, GGUF_META_INT32)?;
     write_u64(w, vals.len() as u64)?;
     for &v in vals {
-        write_u32(w, v)?;
+        w.write_all(&v.to_le_bytes())?;
     }
     Ok(())
 }
@@ -424,8 +433,8 @@ fn kv_string_array_size(key: &str, vals: &[String]) -> u64 {
     size
 }
 
-/// Compute the byte size of a KV u32-array entry.
-fn kv_u32_array_size(key: &str, vals: &[u32]) -> u64 {
+/// Compute the byte size of a KV i32-array entry (same layout as u32).
+fn kv_i32_array_size(key: &str, vals: &[i32]) -> u64 {
     gguf_string_size(key) + 4 + 4 + 8 + (vals.len() as u64 * 4)
 }
 
@@ -563,8 +572,8 @@ fn run_gguf_export(
         .map(|at| (at.id, true))
         .collect();
 
-    // Token types: 1 = normal, 3 = control (special)
-    let token_types: Vec<u32> = (0..vocab_size as u32)
+    // Token types: 1 = normal, 3 = control (special). Stored as INT32 in GGUF.
+    let token_types: Vec<i32> = (0..vocab_size as u32)
         .map(|id| if special_set.contains_key(&id) { 3 } else { 1 })
         .collect();
 
@@ -604,7 +613,12 @@ fn run_gguf_export(
         let shape = tensor_view.shape();
         let ndim = shape.len();
         let num_elements: usize = shape.iter().product();
-        let dims: Vec<u64> = shape.iter().map(|&d| d as u64).collect();
+        // GGUF stores dimensions innermost-first (llama.cpp convention); the
+        // reader reverses them back to logical order. safetensors shapes are
+        // outermost-first, so write them reversed. For a Linear weight stored
+        // as [out, in] this yields ne = [in, out], matching what mistral.rs /
+        // candle expect after their `dimensions.reverse()`.
+        let dims: Vec<u64> = shape.iter().rev().map(|&d| d as u64).collect();
         let gguf_type = choose_gguf_type(&gguf_name, ndim, &config.dtype);
         let data_size = tensor_data_size(num_elements, gguf_type);
 
@@ -650,7 +664,12 @@ fn run_gguf_export(
     let num_layers = model_cfg.num_hidden_layers;
     let num_heads = model_cfg.num_attention_heads;
     let num_kv_heads_usize = model_cfg.num_key_value_heads.unwrap_or(num_heads);
-    let head_dim = model_cfg.hidden_size / num_heads;
+    // Qwen3 decouples head_dim from hidden_size / num_heads; honour the explicit
+    // config value when present so synthesized bias tensors and the GGUF
+    // key_length/value_length metadata match the real attention dimension.
+    let head_dim = model_cfg
+        .head_dim
+        .unwrap_or(model_cfg.hidden_size / num_heads);
 
     for i in 0..num_layers {
         let bias_specs: &[(&str, usize)] = &[
@@ -709,14 +728,19 @@ fn run_gguf_export(
 
     // GGUF architecture string.
     //
-    // In the llama.cpp / mistralrs GGUF ecosystem, Qwen3 is treated as a
-    // Qwen2-variant (same tensor layout, plus optional QK-norm). Bartowski's
-    // pre-built Qwen3 GGUFs all declare `general.architecture = "qwen2"`.
-    // Using "qwen3" would cause loaders to hang or reject the file.
-    let arch = "qwen2";
+    // Qwen3 has the same tensor layout as Qwen2 plus mandatory QK-norm
+    // (`attn_q_norm` / `attn_k_norm`). mistral.rs ships dedicated loaders for
+    // each — `quantized_qwen` for `qwen2`, `quantized_qwen3` for `qwen3` — so
+    // declare the architecture that matches the source `model_type`. Routing a
+    // Qwen3 model through the qwen2 loader loads but produces garbage output.
+    let arch = if model_cfg.model_type.starts_with("qwen3") {
+        "qwen3"
+    } else {
+        "qwen2"
+    };
 
     // Count metadata KV entries
-    let num_metadata: u64 = 18;
+    let num_metadata: u64 = 20;
 
     // Pre-compute header + metadata + tensor info byte size
     let mut header_size: u64 = 0;
@@ -732,12 +756,14 @@ fn run_gguf_export(
     header_size += kv_u32_size(&format!("{arch}.feed_forward_length"));
     header_size += kv_u32_size(&format!("{arch}.attention.head_count"));
     header_size += kv_u32_size(&format!("{arch}.attention.head_count_kv"));
+    header_size += kv_u32_size(&format!("{arch}.attention.key_length"));
+    header_size += kv_u32_size(&format!("{arch}.attention.value_length"));
     header_size += kv_f32_size(&format!("{arch}.attention.layer_norm_rms_epsilon"));
     header_size += kv_f32_size(&format!("{arch}.rope.freq_base"));
     header_size += kv_u32_size(&format!("{arch}.context_length"));
     header_size += kv_string_size("tokenizer.ggml.model", "gpt2");
     header_size += kv_string_array_size("tokenizer.ggml.tokens", &tokens);
-    header_size += kv_u32_array_size("tokenizer.ggml.token_type", &token_types);
+    header_size += kv_i32_array_size("tokenizer.ggml.token_type", &token_types);
     header_size += kv_string_array_size("tokenizer.ggml.merges", &merges);
     header_size += kv_u32_size("tokenizer.ggml.bos_token_id");
     header_size += kv_u32_size("tokenizer.ggml.eos_token_id");
@@ -800,6 +826,19 @@ fn run_gguf_export(
         &format!("{arch}.attention.head_count_kv"),
         num_kv_heads,
     )?;
+    // Per-head dimension. mistral.rs / llama.cpp set head_dim = key_length and
+    // fall back to embedding_length / head_count when these keys are absent —
+    // which is wrong for Qwen3 (head_dim is decoupled), so always emit them.
+    write_kv_u32(
+        &mut w,
+        &format!("{arch}.attention.key_length"),
+        head_dim as u32,
+    )?;
+    write_kv_u32(
+        &mut w,
+        &format!("{arch}.attention.value_length"),
+        head_dim as u32,
+    )?;
     write_kv_f32(
         &mut w,
         &format!("{arch}.attention.layer_norm_rms_epsilon"),
@@ -817,7 +856,7 @@ fn run_gguf_export(
     )?;
     write_kv_string(&mut w, "tokenizer.ggml.model", "gpt2")?;
     write_kv_string_array(&mut w, "tokenizer.ggml.tokens", &tokens)?;
-    write_kv_u32_array(&mut w, "tokenizer.ggml.token_type", &token_types)?;
+    write_kv_i32_array(&mut w, "tokenizer.ggml.token_type", &token_types)?;
     write_kv_string_array(&mut w, "tokenizer.ggml.merges", &merges)?;
     write_kv_u32(&mut w, "tokenizer.ggml.bos_token_id", bos_id)?;
     write_kv_u32(&mut w, "tokenizer.ggml.eos_token_id", eos_id)?;
@@ -898,4 +937,254 @@ fn run_gguf_export(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Resolve the locally cached merged Qwen3-0.6B model directory, if present.
+    /// Returns `None` so the heavy integration test can be skipped on machines
+    /// that have not run a fine-tune.
+    fn merged_qwen3_dir() -> Option<PathBuf> {
+        let dir = dirs::home_dir()?
+            .join("Library/Group Containers/group.com.ondeinference.apps")
+            .join("models/hub/models--Qwen--Qwen3-0.6B/snapshots/merged-model");
+        if dir.join("config.json").exists() && dir.join("model.safetensors").exists() {
+            Some(dir)
+        } else {
+            None
+        }
+    }
+
+    /// Resolve the cached base Qwen3-0.6B snapshot (the hex commit dir), if present.
+    fn base_qwen3_dir() -> Option<PathBuf> {
+        let snapshots = dirs::home_dir()?
+            .join("Library/Group Containers/group.com.ondeinference.apps")
+            .join("models/hub/models--Qwen--Qwen3-0.6B/snapshots");
+        let entry = std::fs::read_dir(&snapshots).ok()?.flatten().find(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n.len() >= 7 && n.chars().all(|c| c.is_ascii_hexdigit())
+        })?;
+        let dir = entry.path();
+        (dir.join("config.json").exists() && dir.join("model.safetensors").exists()).then_some(dir)
+    }
+
+    /// Load a GGUF and generate a reply via the same `onde::mistralrs` engine the
+    /// Onde SDK uses. Returns the assistant text. Panics on model/inference error.
+    fn run_gguf_inference(gguf_path: &std::path::Path, user: &str) -> String {
+        use onde::mistralrs::{
+            GgufModelBuilder, RequestBuilder, Response, TextMessageRole, TokenSource,
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let path = gguf_path.to_path_buf();
+        let user = user.to_string();
+        rt.block_on(async move {
+            let file_name = path.file_name().unwrap().to_string_lossy().to_string();
+            let model_root = path.parent().unwrap().to_string_lossy().to_string();
+            let model = GgufModelBuilder::new(&model_root, vec![file_name])
+                .with_token_source(TokenSource::None)
+                .build()
+                .await
+                .expect("exported GGUF must load in mistral.rs");
+            let req = RequestBuilder::new()
+                .set_sampler_max_len(512)
+                .add_message(TextMessageRole::User, &user);
+            let mut stream = model
+                .stream_chat_request(req)
+                .await
+                .expect("inference request must start");
+            let mut out = String::new();
+            while let Some(resp) = stream.next().await {
+                match resp {
+                    Response::Chunk(chunk) => {
+                        if let Some(choice) = chunk.choices.first()
+                            && let Some(delta) = &choice.delta.content
+                        {
+                            out.push_str(delta);
+                        }
+                    }
+                    Response::Done(_) => break,
+                    Response::ModelError(msg, _) => panic!("model error: {msg}"),
+                    Response::InternalError(e) => panic!("internal error: {e}"),
+                    Response::ValidationError(e) => panic!("validation error: {e}"),
+                    _ => {}
+                }
+            }
+            out
+        })
+    }
+
+    /// Full v1 pipeline regression guard: fine-tune Qwen3-0.6B → merge the LoRA
+    /// adapter → export GGUF → load and run in mistral.rs. Proves the whole
+    /// fine-tune → quantize → run path produces a valid, runnable model.
+    ///
+    /// Ignored by default (trains + loads ~1 GB on Metal/CPU); run with
+    /// `cargo test gguf::tests::finetune_merge_export_run -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "heavy: fine-tunes, merges, exports ~1GB GGUF and runs it"]
+    fn finetune_merge_export_run() {
+        let Some(base_dir) = base_qwen3_dir() else {
+            eprintln!("base Qwen3-0.6B not found locally; skipping");
+            return;
+        };
+        let data_path = dirs::home_dir()
+            .unwrap()
+            .join(".onde/datasets/Qwen/Qwen3-0.6B/train.jsonl");
+        if !data_path.exists() {
+            eprintln!("training data {} not found; skipping", data_path.display());
+            return;
+        }
+
+        let work = std::env::temp_dir().join("onde-e2e-test");
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work).unwrap();
+
+        // 1. Fine-tune.
+        let lora_dir = work.join("lora");
+        let (ft_tx, mut ft_rx) = tokio::sync::mpsc::unbounded_channel();
+        crate::finetune::start_finetune(
+            crate::finetune::FineTuneConfig {
+                model_dir: base_dir.clone(),
+                data_path,
+                output_dir: lora_dir.clone(),
+                lora_rank: 8,
+                lora_alpha: 16.0,
+                learning_rate: std::env::var("ONDE_TEST_LR")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(1e-4),
+                epochs: 2,
+                max_seq_len: 512,
+            },
+            ft_tx,
+        );
+        let mut adapter_path = None;
+        let mut last_loss = f32::NAN;
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            while let Some(p) = ft_rx.recv().await {
+                match p {
+                    crate::finetune::FineTuneProgress::Training { loss, .. } => last_loss = loss,
+                    crate::finetune::FineTuneProgress::Done { adapter_path: a } => {
+                        adapter_path = Some(a);
+                        break;
+                    }
+                    crate::finetune::FineTuneProgress::Failed(e) => panic!("fine-tune failed: {e}"),
+                    _ => {}
+                }
+            }
+        });
+        let adapter_path = adapter_path.expect("fine-tune must produce an adapter");
+        eprintln!("[e2e] fine-tune done, last loss {last_loss}");
+        assert!(last_loss.is_finite(), "training loss is NaN/Inf — training diverged");
+
+        // 2. Merge.
+        let merged_dir = work.join("merged");
+        let (mg_tx, mut mg_rx) = tokio::sync::mpsc::unbounded_channel();
+        crate::merge::start_merge(
+            crate::merge::MergeConfig {
+                base_dir,
+                adapter_path,
+                output_dir: merged_dir.clone(),
+            },
+            mg_tx,
+        );
+        let mut merged_ok = false;
+        rt.block_on(async {
+            while let Some(p) = mg_rx.recv().await {
+                match p {
+                    crate::merge::MergeProgress::Done { .. } => {
+                        merged_ok = true;
+                        break;
+                    }
+                    crate::merge::MergeProgress::Failed(e) => panic!("merge failed: {e}"),
+                    _ => {}
+                }
+            }
+        });
+        assert!(merged_ok, "merge did not complete");
+
+        // 3. Export GGUF (the dtype the CLI ships).
+        let gguf_path = work.join("finetuned-q8_0.gguf");
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        run_gguf_export(
+            &GgufConfig {
+                model_dir: merged_dir,
+                output_path: gguf_path.clone(),
+                dtype: GgufDtype::Q8_0,
+            },
+            &tx,
+        )
+        .expect("GGUF export should succeed");
+
+        // 4. Load + run in mistral.rs. Query in the training distribution
+        //    (the dataset is a Javanese-language assistant) so a lightly
+        //    fine-tuned model has something to say.
+        let reply = run_gguf_inference(&gguf_path, "Apa bahasa Jawa dari \"terima kasih\"?");
+        eprintln!("[e2e] fine-tuned GGUF reply: {reply:?}");
+        assert!(
+            !reply.trim().is_empty(),
+            "fine-tuned GGUF produced an empty reply — not runnable"
+        );
+    }
+
+    /// End-to-end check: export a Qwen3 safetensors model to GGUF, then load and
+    /// run it through the same `onde::mistralrs` engine the Onde SDK uses.
+    ///
+    /// This is the regression guard for the Qwen3 `head_dim` fix: with the wrong
+    /// per-head dimension the GGUF loads with a reshape mismatch and inference
+    /// fails. Ignored by default (downloads/loads ~1 GB, needs Metal/CPU);
+    /// run with `cargo test gguf -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "heavy: exports ~1GB GGUF and loads it in mistral.rs"]
+    fn exported_qwen3_gguf_is_runnable() {
+        // Allow overriding the source model dir and dtype to compare
+        // base-vs-merged and F16-vs-Q8_0 without changing code.
+        let model_dir = match std::env::var("ONDE_TEST_MODEL_DIR") {
+            Ok(d) => PathBuf::from(d),
+            // Default to the known-good base snapshot so this isolates the
+            // exporter; `finetune_merge_export_run` covers the fine-tuned path.
+            Err(_) => match base_qwen3_dir().or_else(merged_qwen3_dir) {
+                Some(d) => d,
+                None => {
+                    eprintln!("Qwen3-0.6B model not found locally; skipping");
+                    return;
+                }
+            },
+        };
+        let dtype = match std::env::var("ONDE_TEST_DTYPE").as_deref() {
+            Ok("f16") => GgufDtype::F16,
+            _ => GgufDtype::Q8_0,
+        };
+        eprintln!("[test] model_dir={} dtype={}", model_dir.display(),
+            if matches!(dtype, GgufDtype::F16) { "f16" } else { "q8_0" });
+
+        let out_dir = std::env::temp_dir().join("onde-gguf-test");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let output_path = out_dir.join("qwen3-0.6b-test.gguf");
+        let _ = std::fs::remove_file(&output_path);
+
+        // 1. Export GGUF.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        run_gguf_export(
+            &GgufConfig {
+                model_dir,
+                output_path: output_path.clone(),
+                dtype,
+            },
+            &tx,
+        )
+        .expect("GGUF export should succeed");
+        assert!(output_path.exists(), "GGUF file was not written");
+
+        // 2. Load + run it through mistral.rs (the Onde SDK's engine).
+        let reply = run_gguf_inference(&output_path, "Say hello in one short sentence.");
+        eprintln!("exported GGUF reply: {reply:?}");
+        assert!(
+            !reply.trim().is_empty(),
+            "exported GGUF produced an empty reply — model is not runnable"
+        );
+    }
 }
