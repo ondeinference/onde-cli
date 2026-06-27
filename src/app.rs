@@ -97,35 +97,44 @@ pub struct AdapterEntry {
     pub kind: ArtifactKind,
 }
 
+/// Classify a filesystem path into a short, human-friendly location label.
+///
+/// Long absolute paths (e.g. the App Group container) get truncated to
+/// gibberish in narrow TUI fields, so anywhere we'd otherwise print a raw
+/// path we show this label instead.
+///
+/// - `"Onde Inference"`: inside the shared App Group container
+/// - `"HF Cache"`: inside `~/.cache/huggingface/hub` or `$HF_HOME`
+/// - the parent directory string: anything else, usually a custom or local export
+pub fn location_label_for_path(path: &std::path::Path) -> String {
+    let path_str = path.to_string_lossy();
+
+    // App Group container (macOS)
+    if path_str.contains("group.com.ondeinference.apps") {
+        return "Onde Inference".to_string();
+    }
+
+    // Standard HF cache locations
+    if path_str.contains(".cache/huggingface/hub") {
+        return "HF Cache".to_string();
+    }
+    if let Ok(hf_home) = std::env::var("HF_HOME")
+        && path_str.starts_with(&hf_home)
+    {
+        return "HF Cache".to_string();
+    }
+
+    // For custom or local paths, just show the directory.
+    path.parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| path_str.to_string())
+}
+
 impl AdapterEntry {
     /// Classify the location of this artifact for display purposes.
-    ///
-    /// - `"Onde Inference"`: inside the shared App Group container
-    /// - `"HF Cache"`: inside `~/.cache/huggingface/hub` or `$HF_HOME`
-    /// - the raw path string: anything else, usually a custom or local export
+    /// See [`location_label_for_path`].
     pub fn location_label(&self) -> String {
-        let path_str = self.path.to_string_lossy();
-
-        // App Group container (macOS)
-        if path_str.contains("group.com.ondeinference.apps") {
-            return "Onde Inference".to_string();
-        }
-
-        // Standard HF cache locations
-        if path_str.contains(".cache/huggingface/hub") {
-            return "HF Cache".to_string();
-        }
-        if let Ok(hf_home) = std::env::var("HF_HOME")
-            && path_str.starts_with(&hf_home)
-        {
-            return "HF Cache".to_string();
-        }
-
-        // For custom or local paths, just show the directory.
-        self.path
-            .parent()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| path_str.to_string())
+        location_label_for_path(&self.path)
     }
 
     /// Whether this GGUF should show the upload-to-HuggingFace UI.
