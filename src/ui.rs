@@ -1860,10 +1860,21 @@ fn render_finetune_done(frame: &mut Frame, app: &App, adapter_path: &std::path::
         .style(Style::new().bg(C_SURFACE_STRONG));
     let path_inner = path_block.inner(rows[3]);
     frame.render_widget(path_block, rows[3]);
+    // Show a friendly location badge plus the file name instead of the raw
+    // absolute path, which truncates to gibberish in this narrow box.
+    let adapter_file = adapter_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
     frame.render_widget(
-        Paragraph::new(adapter_path.to_string_lossy().to_string())
-            .style(Style::new().fg(C_NEON))
-            .wrap(Wrap { trim: true }),
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("[{}]", crate::app::location_label_for_path(adapter_path)),
+                Style::new().fg(C_NEON).bold(),
+            ),
+            Span::styled(format!("  {adapter_file}"), Style::new().fg(C_TEXT)),
+        ]))
+        .wrap(Wrap { trim: true }),
         path_inner,
     );
 
@@ -1938,8 +1949,8 @@ fn render_merge_gguf_section(frame: &mut Frame, app: &App, area: Rect) {
                     Span::styled("✓ ", Style::new().fg(C_NEON)),
                     Span::styled("Merged → ", Style::new().fg(C_NEON).bold()),
                     Span::styled(
-                        output_path.to_string_lossy().to_string(),
-                        Style::new().fg(C_TEXT),
+                        format!("[{}]", crate::app::location_label_for_path(output_path)),
+                        Style::new().fg(C_TEXT).bold(),
                     ),
                 ])),
                 rows[0],
