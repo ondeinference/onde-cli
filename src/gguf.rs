@@ -1078,7 +1078,10 @@ mod tests {
         });
         let adapter_path = adapter_path.expect("fine-tune must produce an adapter");
         eprintln!("[e2e] fine-tune done, last loss {last_loss}");
-        assert!(last_loss.is_finite(), "training loss is NaN/Inf — training diverged");
+        assert!(
+            last_loss.is_finite(),
+            "training loss is NaN/Inf — training diverged"
+        );
 
         // 2. Merge.
         let merged_dir = work.join("merged");
@@ -1158,8 +1161,15 @@ mod tests {
             Ok("f16") => GgufDtype::F16,
             _ => GgufDtype::Q8_0,
         };
-        eprintln!("[test] model_dir={} dtype={}", model_dir.display(),
-            if matches!(dtype, GgufDtype::F16) { "f16" } else { "q8_0" });
+        eprintln!(
+            "[test] model_dir={} dtype={}",
+            model_dir.display(),
+            if matches!(dtype, GgufDtype::F16) {
+                "f16"
+            } else {
+                "q8_0"
+            }
+        );
 
         let out_dir = std::env::temp_dir().join("onde-gguf-test");
         std::fs::create_dir_all(&out_dir).unwrap();
