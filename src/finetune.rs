@@ -121,8 +121,18 @@ fn run_finetune(
     // ------------------------------------------------------------------
     // Step C — Choose compute device
     // ------------------------------------------------------------------
+    // Training runs on CPU even on macOS: candle 0.10.2's Metal *backward*
+    // pass produces garbage gradient magnitudes (1e6–1e29 at pristine weights,
+    // where the CPU backward yields norms of ~40–65 for identical losses), and
+    // with Accelerate the CPU backward is also ~2x faster per step. Metal
+    // remains opt-in via ONDE_FINETUNE_METAL for re-testing on newer candle.
+    // Forward-only paths (inference, merge, export) are unaffected.
     #[cfg(target_os = "macos")]
-    let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+    let device = if std::env::var("ONDE_FINETUNE_METAL").is_ok() {
+        Device::new_metal(0).unwrap_or(Device::Cpu)
+    } else {
+        Device::Cpu
+    };
     #[cfg(not(target_os = "macos"))]
     let device = Device::Cpu;
 
@@ -297,24 +307,68 @@ fn run_finetune(
             // AdamW moment estimates, corrupting every weight from that step on.
             // Replace non-finite elements with zero so the remaining finite
             // gradient still trains those parameters this step.
-            let mut total_norm_sq: f64 = 0.0;
+            // Pass 1 — sanitize each gradient and find the largest |g| element
+            // across all tensors. sanitize_grad admits elements up to 1e30, but
+            // squaring anything above ~1.8e19 overflows the f32 sum below, so the
+            // norm must be computed in a scaled space.
+            let mut cleaned: Vec<(&Var, Tensor)> = Vec::with_capacity(lora_vars.len());
+            let mut global_max_abs: f64 = 0.0;
             for var in &lora_vars {
                 if let Some(grad) = grads.get(var.as_tensor()) {
                     let clean = sanitize_grad(grad).context("sanitizing gradient")?;
-                    let norm_sq = clean
-                        .sqr()
+                    let max_abs = clean
+                        .abs()
+                        .and_then(|t| t.max_all())
+                        .and_then(|t| t.to_scalar::<f32>())
+                        .unwrap_or(0.0) as f64;
+                    global_max_abs = global_max_abs.max(max_abs);
+                    cleaned.push((var, clean));
+                }
+            }
+
+            // Pass 2 — L2 norm of the gradients scaled by 1/global_max_abs.
+            // Scaled elements are ≤ 1 so the f32 accumulation cannot overflow;
+            // the true norm is recovered in f64. Exploding-but-finite gradients
+            // thus get a finite norm and are tamed by clipping below instead of
+            // forcing the whole step to be skipped.
+            let mut scaled_norm_sq: f64 = 0.0;
+            if global_max_abs > 0.0 {
+                let inv = 1.0 / global_max_abs;
+                for (_, clean) in &cleaned {
+                    let norm_sq = (clean * inv)
+                        .and_then(|t| t.sqr())
                         .and_then(|t| t.sum_all())
                         .and_then(|t| t.to_scalar::<f32>())
                         .unwrap_or(0.0) as f64;
-                    total_norm_sq += norm_sq;
-                    grads.insert(var.as_tensor(), clean);
+                    scaled_norm_sq += norm_sq;
                 }
             }
-            let total_norm = total_norm_sq.sqrt();
+            let total_norm = global_max_abs * scaled_norm_sq.sqrt();
+            if std::env::var("ONDE_FINETUNE_GRAD_DEBUG").is_ok() {
+                eprintln!(
+                    "[finetune] grad-debug epoch {} step {} seq_len {} loss {:.4} max_abs {:.3e} norm {:.3e}",
+                    epoch + 1,
+                    step + 1,
+                    seq_len,
+                    loss_val,
+                    global_max_abs,
+                    total_norm
+                );
+            }
+            for (var, clean) in cleaned {
+                grads.insert(var.as_tensor(), clean);
+            }
 
             // Nothing finite to learn from this step — skip the update so AdamW
             // state stays clean.
             if total_norm == 0.0 || !total_norm.is_finite() {
+                eprintln!(
+                    "[finetune] WARNING: global grad norm is {} at epoch {} step {} (seq_len {}), skipping update",
+                    total_norm,
+                    epoch + 1,
+                    step + 1,
+                    seq_len
+                );
                 continue;
             }
 

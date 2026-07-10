@@ -17,7 +17,7 @@ cargo clippy --all-targets
 
 The build **bakes credentials in at compile time** via `build.rs`, which reads `.env` (or the environment in CI). The build fails if any of these are missing: `ONDE_APP_ID`, `ONDE_APP_SECRET`, `GRESIQ_API_KEY`, `GRESIQ_API_SECRET`. `HF_TOKEN` is optional (defaults to empty). Changing `.env` triggers a rebuild. These are exposed in code as `env!(...)` constants in `src/app.rs`.
 
-On macOS the build pulls in candle's `metal` and `accelerate` features, so inference and training run on Metal; elsewhere they fall back to CPU.
+On macOS the build pulls in candle's `metal` and `accelerate` features. Inference runs on Metal; **training deliberately runs on CPU everywhere** — candle 0.10.2's Metal backward pass produces garbage gradient magnitudes (1e6–1e29 where CPU gives ~40–65 for identical losses), and Accelerate is ~2x faster per training step anyway. `ONDE_FINETUNE_METAL=1` re-enables Metal training for testing newer candle versions; verify gradients with `ONDE_FINETUNE_GRAD_DEBUG=1` (per-step loss/max_abs/norm) before trusting it.
 
 ### Tests that load real models
 
@@ -28,7 +28,7 @@ cargo test gguf::tests::exported_qwen3_gguf_is_runnable -- --ignored --nocapture
 cargo test gguf::tests::finetune_merge_export_run     -- --ignored --nocapture
 ```
 
-Env knobs for these: `ONDE_TEST_MODEL_DIR`, `ONDE_TEST_DTYPE` (`f16`/`q8_0`), `ONDE_TEST_LR`.
+Env knobs for these: `ONDE_TEST_MODEL_DIR`, `ONDE_TEST_DTYPE` (`f16`/`q8_0`), `ONDE_TEST_LR`, `ONDE_TEST_DATA_PATH`, `ONDE_TEST_EPOCHS`, `ONDE_TEST_MAX_SEQ_LEN`, `ONDE_TEST_EVAL_PROMPT` (`||`-separated prompts), `ONDE_TEST_SYSTEM_PROMPT`. This makes the full-pipeline test double as a headless fine-tune runner for a custom dataset.
 
 ### Debugging the TUI
 
@@ -46,7 +46,7 @@ Background work uses two task kinds deliberately: network/IO uses `tokio::spawn`
 
 These modules form the fine-tune-to-deploy chain, each running on a background thread and streaming a `*Progress` enum:
 
-- `finetune.rs` — hand-written LoRA trainer (candle). Builds a Qwen forward pass (RMSNorm, RoPE, GQA, optional Qwen3 QK-norm), trains LoRA A/B on q/v projections in F32, writes `lora_adapter.safetensors`. Gradients are sanitized (non-finite elements zeroed) and globally norm-clipped before each AdamW step; a step is skipped entirely if its global grad norm is non-finite. Skipping this guard corrupts every weight after the first bad step.
+- `finetune.rs` — hand-written LoRA trainer (candle). Builds a Qwen forward pass (RMSNorm, RoPE, GQA, optional Qwen3 QK-norm), trains LoRA A/B on q/v projections in F32, writes `lora_adapter.safetensors`. Gradients are sanitized (non-finite elements zeroed) and globally norm-clipped before each AdamW step; the norm is computed in a scaled space so huge-but-finite gradients clip instead of overflowing the f32 sum to `inf`. A step is skipped (loudly) only when the norm is zero or non-finite. Skipping this guard corrupts every weight after the first bad step. Training runs on CPU — see the Metal note above.
 - `merge.rs` — folds the LoRA adapter back into base weights (`W + scale·(B@A)`), writes a merged `model.safetensors` plus copied config/tokenizer.
 - `gguf.rs` — **hand-rolled GGUF writer** (no llama.cpp). Conventions that must hold for mistral.rs/candle to load and run the file correctly: tensor dims are written innermost-first (reverse of safetensors shape, because candle reverses on read); `head_dim` comes from config and is emitted as `attention.key_length`/`value_length` (Qwen3 decouples it from `hidden_size/num_heads`); `token_type` is an INT32 array; `general.architecture` is chosen from `model_type` so Qwen3 routes to candle's `quantized_qwen3` loader.
 - `chat.rs` — loads a local GGUF via `onde::mistralrs::GgufModelBuilder` (the same engine the Onde SDK uses) and streams a multi-turn chat, so a model can be tested before publishing.

@@ -988,9 +988,11 @@ mod tests {
                 .build()
                 .await
                 .expect("exported GGUF must load in mistral.rs");
-            let req = RequestBuilder::new()
-                .set_sampler_max_len(512)
-                .add_message(TextMessageRole::User, &user);
+            let mut req = RequestBuilder::new().set_sampler_max_len(512);
+            if let Ok(system) = std::env::var("ONDE_TEST_SYSTEM_PROMPT") {
+                req = req.add_message(TextMessageRole::System, &system);
+            }
+            let req = req.add_message(TextMessageRole::User, &user);
             let mut stream = model
                 .stream_chat_request(req)
                 .await
@@ -1029,9 +1031,12 @@ mod tests {
             eprintln!("base Qwen3-0.6B not found locally; skipping");
             return;
         };
-        let data_path = dirs::home_dir()
-            .unwrap()
-            .join(".onde/datasets/Qwen/Qwen3-0.6B/train.jsonl");
+        let data_path = match std::env::var("ONDE_TEST_DATA_PATH") {
+            Ok(p) => PathBuf::from(p),
+            Err(_) => dirs::home_dir()
+                .unwrap()
+                .join(".onde/datasets/Qwen/Qwen3-0.6B/train.jsonl"),
+        };
         if !data_path.exists() {
             eprintln!("training data {} not found; skipping", data_path.display());
             return;
@@ -1055,8 +1060,14 @@ mod tests {
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(1e-4),
-                epochs: 2,
-                max_seq_len: 512,
+                epochs: std::env::var("ONDE_TEST_EPOCHS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(2),
+                max_seq_len: std::env::var("ONDE_TEST_MAX_SEQ_LEN")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(512),
             },
             ft_tx,
         );
@@ -1066,7 +1077,16 @@ mod tests {
         rt.block_on(async {
             while let Some(p) = ft_rx.recv().await {
                 match p {
-                    crate::finetune::FineTuneProgress::Training { loss, .. } => last_loss = loss,
+                    crate::finetune::FineTuneProgress::Training {
+                        loss,
+                        step,
+                        total_steps,
+                        epoch,
+                        ..
+                    } => {
+                        eprintln!("[e2e] epoch {epoch} step {step}/{total_steps} loss {loss:.4}");
+                        last_loss = loss;
+                    }
                     crate::finetune::FineTuneProgress::Done { adapter_path: a } => {
                         adapter_path = Some(a);
                         break;
@@ -1122,15 +1142,20 @@ mod tests {
         )
         .expect("GGUF export should succeed");
 
-        // 4. Load + run in mistral.rs. Query in the training distribution
-        //    (the dataset is a Javanese-language assistant) so a lightly
-        //    fine-tuned model has something to say.
-        let reply = run_gguf_inference(&gguf_path, "Apa bahasa Jawa dari \"terima kasih\"?");
-        eprintln!("[e2e] fine-tuned GGUF reply: {reply:?}");
-        assert!(
-            !reply.trim().is_empty(),
-            "fine-tuned GGUF produced an empty reply — not runnable"
-        );
+        // 4. Load + run in mistral.rs. Query in the training distribution so a
+        //    lightly fine-tuned model has something to say. `ONDE_TEST_EVAL_PROMPT`
+        //    overrides the default (multiple prompts separated by `||`).
+        let eval_prompts = std::env::var("ONDE_TEST_EVAL_PROMPT")
+            .unwrap_or_else(|_| "Apa bahasa Jawa dari \"terima kasih\"?".to_string());
+        for prompt in eval_prompts.split("||") {
+            let reply = run_gguf_inference(&gguf_path, prompt.trim());
+            eprintln!("[e2e] eval prompt: {prompt:?}");
+            eprintln!("[e2e] fine-tuned GGUF reply: {reply:?}");
+            assert!(
+                !reply.trim().is_empty(),
+                "fine-tuned GGUF produced an empty reply — not runnable"
+            );
+        }
     }
 
     /// End-to-end check: export a Qwen3 safetensors model to GGUF, then load and
