@@ -1331,13 +1331,19 @@ mod tests {
 
     #[test]
     fn test_compute_loss_mask_zero_length_span() {
-        // A zero-length span (empty assistant content) should not match tokens
+        // A zero-length span occurs when assistant content is empty — the
+        // span collapses to a single point where content_start == end_tag_start.
+        // Any token whose range contains that point (e.g. the immediately
+        // following `<|im_end|>` token) must still be masked true, since the
+        // model needs to learn to emit `<|im_end|>` right after the role
+        // header even for an empty response.
         let offsets = vec![(10, 20), (20, 30)];
         let spans = vec![(15, 15)]; // zero-length at byte 15
         let mask = compute_loss_mask(&offsets, &spans);
 
-        // Zero-length spans match nothing (start == end, so condition fails)
-        assert_eq!(mask, vec![false, false]);
+        // Token [10, 20) contains the zero-length span's point (15) → true.
+        // Token [20, 30) does not → false.
+        assert_eq!(mask, vec![true, false]);
     }
 
     #[test]
