@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use candle_core::{D, DType, Device, Tensor, Var};
+use candle_core::{DType, Device, Tensor, Var, D};
 use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder};
 use tokenizers::Tokenizer;
 
@@ -194,7 +194,13 @@ fn run_finetune(
         .context("reading training data")?;
 
     let total_lines = raw_lines.len();
-    let mut token_batches: Vec<Vec<u32>> = Vec::new();
+
+    struct TrainingExample {
+        tokens: Vec<u32>,
+        mask: Vec<bool>,
+    }
+
+    let mut examples: Vec<TrainingExample> = Vec::new();
 
     for (i, line) in raw_lines.iter().enumerate() {
         let line = line.trim();
@@ -209,21 +215,67 @@ fn run_finetune(
         let entry: DataEntry =
             serde_json::from_str(line).with_context(|| format!("parsing JSONL line {}", i + 1))?;
 
+        let (rendered_text, assistant_spans) = match &entry {
+            DataEntry::Raw { text } => (text.clone(), Vec::new()),
+            DataEntry::Messages { messages } => render_chatml(messages),
+        };
+
         let encoding = tokenizer
-            .encode(entry.text.as_str(), false)
+            .encode(rendered_text.as_str(), false)
             .map_err(|e| anyhow::anyhow!("tokenizing line {}: {e}", i + 1))?;
 
         let ids = encoding.get_ids();
-        let ids: Vec<u32> = if ids.len() > config.max_seq_len {
-            ids[..config.max_seq_len].to_vec()
+        let offsets = encoding.get_offsets();
+
+        // Truncate ids and offsets together to max_seq_len
+        let (ids, offsets) = if ids.len() > config.max_seq_len {
+            (
+                ids[..config.max_seq_len].to_vec(),
+                offsets[..config.max_seq_len].to_vec(),
+            )
         } else {
-            ids.to_vec()
+            (ids.to_vec(), offsets.to_vec())
         };
 
         // Need at least 2 tokens for next-token prediction.
-        if ids.len() >= 2 {
-            token_batches.push(ids);
+        if ids.len() < 2 {
+            eprintln!(
+                "[finetune] WARNING: skipping line {} (too short: {} tokens)",
+                i + 1,
+                ids.len()
+            );
+            let _ = tx.send(FineTuneProgress::Tokenizing {
+                done: i + 1,
+                total: total_lines,
+            });
+            continue;
         }
+
+        let mask = if assistant_spans.is_empty() {
+            // Raw format: full-sequence loss (backward compatible)
+            vec![true; ids.len()]
+        } else {
+            // Messages format: mask only assistant completions
+            compute_loss_mask(&offsets, &assistant_spans)
+        };
+
+        // For Messages entries, check that the shifted mask has at least one true
+        if !assistant_spans.is_empty() && mask.len() > 1 {
+            let shifted_mask = &mask[1..];
+            if !shifted_mask.iter().any(|&m| m) {
+                eprintln!(
+                    "[finetune] WARNING: skipping line {} (assistant content truncated away)",
+                    i + 1
+                );
+                let _ = tx.send(FineTuneProgress::Tokenizing {
+                    done: i + 1,
+                    total: total_lines,
+                });
+                continue;
+            }
+        }
+
+        examples.push(TrainingExample { tokens: ids, mask });
 
         let _ = tx.send(FineTuneProgress::Tokenizing {
             done: i + 1,
@@ -231,7 +283,7 @@ fn run_finetune(
         });
     }
 
-    if token_batches.is_empty() {
+    if examples.is_empty() {
         anyhow::bail!("no valid training examples found in {:?}", config.data_path);
     }
 
@@ -246,15 +298,15 @@ fn run_finetune(
     let mut optimizer =
         AdamW::new(lora_vars.clone(), adamw_params).context("creating AdamW optimizer")?;
 
-    let total_steps = token_batches.len();
+    let total_steps = examples.len();
     let vocab_size = model_cfg.vocab_size;
     let max_grad_norm: f64 = 1.0;
 
     for epoch in 0..config.epochs {
-        for (step, batch_tokens) in token_batches.iter().enumerate() {
-            let seq_len = batch_tokens.len();
+        for (step, example) in examples.iter().enumerate() {
+            let seq_len = example.tokens.len();
 
-            let input_ids = Tensor::from_slice(batch_tokens.as_slice(), (1, seq_len), &device)
+            let input_ids = Tensor::from_slice(example.tokens.as_slice(), (1, seq_len), &device)
                 .context("building input_ids tensor")?;
 
             let logits = model.forward(&input_ids).context("model forward pass")?;
@@ -265,10 +317,50 @@ fn run_finetune(
                 .and_then(|t| t.reshape((seq_len - 1, vocab_size)))
                 .context("preparing shifted logits")?;
 
-            let targets = Tensor::from_slice(&batch_tokens[1..], (seq_len - 1,), &device)
+            let targets = Tensor::from_slice(&example.tokens[1..], (seq_len - 1,), &device)
                 .context("building target tensor")?;
 
-            let loss = candle_nn::loss::cross_entropy(&logits_shifted, &targets)
+            let shifted_mask = &example.mask[1..];
+
+            // Fast path: if all tokens are active (typical for Raw entries), skip index_select
+            let (logits_masked, targets_masked) = if shifted_mask.iter().all(|&m| m) {
+                (logits_shifted.clone(), targets.clone())
+            } else {
+                // Masked path: keep only the positions where mask is true
+                let keep: Vec<u32> = shifted_mask
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, &m)| if m { Some(i as u32) } else { None })
+                    .collect();
+
+                if keep.is_empty() {
+                    eprintln!(
+                        "[finetune] WARNING: no masked tokens at epoch {} step {}, skipping",
+                        epoch + 1,
+                        step + 1
+                    );
+                    let _ = tx.send(FineTuneProgress::Training {
+                        epoch: epoch + 1,
+                        total_epochs: config.epochs,
+                        step: step + 1,
+                        total_steps,
+                        loss: 0.0,
+                    });
+                    continue;
+                }
+
+                let keep_idx = Tensor::from_slice(keep.as_slice(), (keep.len(),), &device)
+                    .context("building keep indices")?;
+                let logits_masked = logits_shifted
+                    .index_select(&keep_idx, 0)
+                    .context("indexing logits")?;
+                let targets_masked = targets
+                    .index_select(&keep_idx, 0)
+                    .context("indexing targets")?;
+                (logits_masked, targets_masked)
+            };
+
+            let loss = candle_nn::loss::cross_entropy(&logits_masked, &targets_masked)
                 .context("computing cross-entropy loss")?;
 
             let loss_val = loss.to_scalar::<f32>().context("reading loss scalar")?;
@@ -433,8 +525,60 @@ struct ModelConfig {
 }
 
 #[derive(serde::Deserialize)]
-struct DataEntry {
-    text: String,
+#[serde(untagged)]
+enum DataEntry {
+    Messages { messages: Vec<DatasetMessage> },
+    Raw { text: String },
+}
+
+#[derive(serde::Deserialize)]
+struct DatasetMessage {
+    role: String,
+    content: String,
+}
+
+/// Renders `messages` as literal Qwen ChatML, matching the format written by
+/// hand in existing `Raw` datasets. Returns the rendered string plus byte-offset
+/// spans of every assistant turn (content start through that turn's closing
+/// `<|im_end|>`, not including the trailing `\n`) for loss-mask computation.
+fn render_chatml(messages: &[DatasetMessage]) -> (String, Vec<(usize, usize)>) {
+    let mut output = String::new();
+    let mut assistant_spans = Vec::new();
+
+    for msg in messages {
+        output.push_str("<|im_start|>");
+        output.push_str(&msg.role);
+        output.push('\n');
+
+        let content_start = output.len();
+        output.push_str(&msg.content);
+
+        if msg.role == "assistant" {
+            let end_tag_start = output.len();
+            output.push_str("<|im_end|>");
+            assistant_spans.push((content_start, end_tag_start));
+        } else {
+            output.push_str("<|im_end|>");
+        }
+
+        output.push('\n');
+    }
+
+    (output, assistant_spans)
+}
+
+/// Pure function: true where a token's byte-offset range overlaps any
+/// assistant span. Decoupled from tokenizer types so it's unit-testable
+/// with synthetic data.
+fn compute_loss_mask(offsets: &[(usize, usize)], assistant_spans: &[(usize, usize)]) -> Vec<bool> {
+    offsets
+        .iter()
+        .map(|&(token_start, token_end)| {
+            assistant_spans
+                .iter()
+                .any(|&(span_start, span_end)| token_start < span_end && token_end > span_start)
+        })
+        .collect()
 }
 
 /// Top-level structure of `model.safetensors.index.json`.
@@ -1001,5 +1145,212 @@ impl LoraQwenModel {
             .with_context(|| format!("writing {:?}", path))?;
 
         Ok(path)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dataentry_raw_deserialization() {
+        let json = r#"{"text":"hello world"}"#;
+        let entry: DataEntry = serde_json::from_str(json).unwrap();
+        match entry {
+            DataEntry::Raw { text } => assert_eq!(text, "hello world"),
+            _ => panic!("expected Raw variant"),
+        }
+    }
+
+    #[test]
+    fn test_dataentry_messages_deserialization() {
+        let json = r#"{"messages":[{"role":"user","content":"hi"}]}"#;
+        let entry: DataEntry = serde_json::from_str(json).unwrap();
+        match entry {
+            DataEntry::Messages { messages } => {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].role, "user");
+                assert_eq!(messages[0].content, "hi");
+            }
+            _ => panic!("expected Messages variant"),
+        }
+    }
+
+    #[test]
+    fn test_dataentry_invalid() {
+        let json = r#"{"invalid":"field"}"#;
+        let result: Result<DataEntry, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "should reject unrecognized format");
+    }
+
+    #[test]
+    fn test_render_chatml_basic() {
+        let messages = vec![
+            DatasetMessage {
+                role: "system".to_string(),
+                content: "You are helpful".to_string(),
+            },
+            DatasetMessage {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+            },
+            DatasetMessage {
+                role: "assistant".to_string(),
+                content: "Hi there".to_string(),
+            },
+        ];
+
+        let (rendered, spans) = render_chatml(&messages);
+
+        assert!(
+            rendered.contains("<|im_start|>system"),
+            "should contain system marker"
+        );
+        assert!(
+            rendered.contains("You are helpful"),
+            "should contain system content"
+        );
+        assert!(
+            rendered.contains("<|im_start|>user"),
+            "should contain user marker"
+        );
+        assert!(rendered.contains("Hello"), "should contain user content");
+        assert!(
+            rendered.contains("<|im_start|>assistant"),
+            "should contain assistant marker"
+        );
+        assert!(
+            rendered.contains("Hi there"),
+            "should contain assistant content"
+        );
+
+        assert_eq!(spans.len(), 1, "should have exactly one assistant span");
+        let (start, end) = spans[0];
+        assert!(rendered[start..end].contains("Hi there"));
+        assert!(rendered[end..].starts_with("<|im_end|>"));
+    }
+
+    #[test]
+    fn test_render_chatml_multi_assistant() {
+        let messages = vec![
+            DatasetMessage {
+                role: "assistant".to_string(),
+                content: "First".to_string(),
+            },
+            DatasetMessage {
+                role: "user".to_string(),
+                content: "Second".to_string(),
+            },
+            DatasetMessage {
+                role: "assistant".to_string(),
+                content: "Third".to_string(),
+            },
+        ];
+
+        let (_rendered, spans) = render_chatml(&messages);
+        assert_eq!(spans.len(), 2, "should have exactly two assistant spans");
+    }
+
+    #[test]
+    fn test_render_chatml_no_assistant() {
+        let messages = vec![DatasetMessage {
+            role: "user".to_string(),
+            content: "Just a question".to_string(),
+        }];
+
+        let (_rendered, spans) = render_chatml(&messages);
+        assert_eq!(spans.len(), 0, "should have no assistant spans");
+    }
+
+    #[test]
+    fn test_render_chatml_utf8_indonesian() {
+        let messages = vec![
+            DatasetMessage {
+                role: "user".to_string(),
+                content: "Apa kabar? Ini ada diacritik: é".to_string(),
+            },
+            DatasetMessage {
+                role: "assistant".to_string(),
+                content: "Baik-baik saja. Jawaban dengan: ñ dan ü".to_string(),
+            },
+        ];
+
+        let (rendered, spans) = render_chatml(&messages);
+        assert_eq!(spans.len(), 1, "should have one assistant span");
+
+        let (start, end) = spans[0];
+        let assistant_content = &rendered[start..end];
+        assert!(assistant_content.contains("Baik-baik saja"));
+        assert!(assistant_content.contains("ñ"));
+        assert!(assistant_content.contains("ü"));
+    }
+
+    #[test]
+    fn test_compute_loss_mask_all_inside() {
+        let offsets = vec![(10, 15), (15, 20), (20, 25)];
+        let spans = vec![(0, 30)];
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        assert_eq!(mask, vec![true, true, true]);
+    }
+
+    #[test]
+    fn test_compute_loss_mask_all_outside() {
+        let offsets = vec![(0, 5), (5, 10), (40, 45)];
+        let spans = vec![(20, 30)];
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        assert_eq!(mask, vec![false, false, false]);
+    }
+
+    #[test]
+    fn test_compute_loss_mask_straddling_start() {
+        let offsets = vec![(15, 25), (25, 35)];
+        let spans = vec![(20, 40)];
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        // First token [15, 25) overlaps [20, 40) → true
+        // Second token [25, 35) overlaps [20, 40) → true
+        assert_eq!(mask, vec![true, true]);
+    }
+
+    #[test]
+    fn test_compute_loss_mask_straddling_end() {
+        let offsets = vec![(10, 25), (25, 35)];
+        let spans = vec![(15, 30)];
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        // First token [10, 25) overlaps [15, 30) → true
+        // Second token [25, 35) overlaps [15, 30) → true
+        assert_eq!(mask, vec![true, true]);
+    }
+
+    #[test]
+    fn test_compute_loss_mask_zero_length_span() {
+        // A zero-length span (empty assistant content) should not match tokens
+        let offsets = vec![(10, 20), (20, 30)];
+        let spans = vec![(15, 15)]; // zero-length at byte 15
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        // Zero-length spans match nothing (start == end, so condition fails)
+        assert_eq!(mask, vec![false, false]);
+    }
+
+    #[test]
+    fn test_compute_loss_mask_multiple_spans() {
+        let offsets = vec![(0, 5), (5, 10), (10, 15), (15, 20), (20, 25)];
+        let spans = vec![(2, 12), (18, 22)];
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        // [0, 5) overlaps [2, 12) → true
+        // [5, 10) overlaps [2, 12) → true
+        // [10, 15) overlaps [2, 12) → true
+        // [15, 20) overlaps [18, 22) → true
+        // [20, 25) overlaps [18, 22) → true
+        assert_eq!(mask, vec![true, true, true, true, true]);
     }
 }
