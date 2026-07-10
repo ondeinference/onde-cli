@@ -39,7 +39,7 @@ npm install -g @ondeinference/cli
 ### Homebrew
 
 ```sh
-brew tap ondeinference/homebrew-tap
+brew tap ondeinference/homebrew-tap && brew trust --tap ondeinference/homebrew-tap
 brew install onde
 ```
 
@@ -183,4 +183,4 @@ Dual-licensed under [MIT](https://github.com/ondeinference/onde-cli/blob/main/LI
 
 ## Copyright
 
-© 2026 [Onde Inference](https://ondeinference.com) (Splitfire AB).
+© 2026 [Splitfire AB](https://5mb.app) ([Onde Inference](https://ondeinference.com)).

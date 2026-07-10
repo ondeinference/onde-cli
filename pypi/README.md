@@ -223,4 +223,4 @@ Dual-licensed under **MIT** and **Apache 2.0**.
 
 ## Copyright
 
-© 2026 [Onde Inference](https://ondeinference.com) (Splitfire AB).
+© 2026 [Splitfire AB](https://5mb.app) ([Onde Inference](https://ondeinference.com)).
