@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use candle_core::{DType, Device, Tensor, Var, D};
+use candle_core::{D, DType, Device, Tensor, Var};
 use candle_nn::{AdamW, Optimizer, ParamsAdamW, VarBuilder};
 use tokenizers::Tokenizer;
 
@@ -539,8 +539,9 @@ struct DatasetMessage {
 
 /// Renders `messages` as literal Qwen ChatML, matching the format written by
 /// hand in existing `Raw` datasets. Returns the rendered string plus byte-offset
-/// spans of every assistant turn (content start through that turn's closing
-/// `<|im_end|>`, not including the trailing `\n`) for loss-mask computation.
+/// spans of every assistant turn (content start through the end of that turn's
+/// closing `<|im_end|>`, which is included so the model learns to emit it; the
+/// trailing `\n` is not) for loss-mask computation.
 fn render_chatml(messages: &[DatasetMessage]) -> (String, Vec<(usize, usize)>) {
     let mut output = String::new();
     let mut assistant_spans = Vec::new();
@@ -554,9 +555,14 @@ fn render_chatml(messages: &[DatasetMessage]) -> (String, Vec<(usize, usize)>) {
         output.push_str(&msg.content);
 
         if msg.role == "assistant" {
-            let end_tag_start = output.len();
             output.push_str("<|im_end|>");
-            assistant_spans.push((content_start, end_tag_start));
+            // Span end is *after* `<|im_end|>` so the closing marker is masked
+            // in for loss: the model has to learn to emit it, otherwise
+            // generations never terminate. Whether the marker tokenizes as one
+            // special token or splits into several is irrelevant here — every
+            // resulting token's byte offset falls inside this span.
+            let span_end = output.len();
+            assistant_spans.push((content_start, span_end));
         } else {
             output.push_str("<|im_end|>");
         }
@@ -1230,8 +1236,12 @@ mod tests {
 
         assert_eq!(spans.len(), 1, "should have exactly one assistant span");
         let (start, end) = spans[0];
+        // The span covers the assistant content and its closing `<|im_end|>`,
+        // so the model is trained to emit the stop marker.
         assert!(rendered[start..end].contains("Hi there"));
-        assert!(rendered[end..].starts_with("<|im_end|>"));
+        assert!(rendered[start..end].ends_with("<|im_end|>"));
+        // Only the trailing newline remains after the span.
+        assert!(rendered[end..].starts_with('\n'));
     }
 
     #[test]
@@ -1358,5 +1368,45 @@ mod tests {
         // [15, 20) overlaps [18, 22) → true
         // [20, 25) overlaps [18, 22) → true
         assert_eq!(mask, vec![true, true, true, true, true]);
+    }
+
+    #[test]
+    fn test_assistant_span_masks_closing_im_end() {
+        // The closing `<|im_end|>` of an assistant turn must be masked in for
+        // loss so the model learns to stop. Its byte range must fall inside the
+        // reported span, and every token it produces must be masked true —
+        // whether the marker tokenizes as one special token or splits into
+        // several literal pieces (which can happen with add_special_tokens=false).
+        let messages = vec![DatasetMessage {
+            role: "assistant".to_string(),
+            content: "Hi".to_string(),
+        }];
+
+        let (rendered, spans) = render_chatml(&messages);
+        assert_eq!(spans.len(), 1);
+        let (span_start, span_end) = spans[0];
+
+        let marker = "<|im_end|>";
+        let marker_start = rendered.find(marker).expect("marker present");
+        let marker_end = marker_start + marker.len();
+
+        // The marker's whole byte range sits within the assistant span.
+        assert!(marker_start >= span_start && marker_end <= span_end);
+
+        // Single-token marker → masked.
+        let single = compute_loss_mask(&[(marker_start, marker_end)], &spans);
+        assert_eq!(single, vec![true]);
+
+        // Split marker (e.g. "<|", "im", "_end", "|>") → every piece masked.
+        let split = compute_loss_mask(
+            &[
+                (marker_start, marker_start + 2),
+                (marker_start + 2, marker_start + 4),
+                (marker_start + 4, marker_start + 8),
+                (marker_start + 8, marker_end),
+            ],
+            &spans,
+        );
+        assert_eq!(split, vec![true, true, true, true]);
     }
 }
