@@ -3351,7 +3351,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "smbcloud-gresiq-sdk 0.4.8",
+ "smbcloud-gresiq-sdk",
  "thiserror 2.0.18",
  "tokio",
  "tsync",
@@ -3379,7 +3379,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "smbcloud-auth-sdk",
- "smbcloud-gresiq-sdk 0.3.41",
+ "smbcloud-gresiq-sdk",
  "smbcloud-model 0.3.41",
  "smbcloud-network 0.3.41",
  "tokenizers 0.20.4",
@@ -5143,25 +5143,7 @@ dependencies = [
 
 [[package]]
 name = "smbcloud-gresiq-sdk"
-version = "0.3.41"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02a8c916737a712020c57191bcab728303a3963f3fd1c03bd3ddeaf67c4c0a64"
-dependencies = [
- "anyhow",
- "log",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "smbcloud-network 0.3.41",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "smbcloud-gresiq-sdk"
-version = "0.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "27abf6a2b9d9db0246b3d68e4ce447b5569f43ede7ca4ceb08afeed4232f3c02"
+version = "0.4.9"
 dependencies = [
  "anyhow",
  "log",
@@ -5194,8 +5176,6 @@ dependencies = [
 [[package]]
 name = "smbcloud-model"
 version = "0.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21047dc7f858988cf73f0f70b0e4c087963464c4ba0f4d8c45fbcea4c6d9390a"
 dependencies = [
  "chrono",
  "log",
@@ -5227,8 +5207,6 @@ dependencies = [
 [[package]]
 name = "smbcloud-network"
 version = "0.4.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5be96c7f572f0c91032c0a47818201f30481cdcf1965d86e5269a2cb8742ad2b"
 dependencies = [
  "clap 4.6.1",
  "log",

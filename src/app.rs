@@ -47,6 +47,8 @@ pub enum Screen {
     GgufDetail,
     CloneRepo,
     Chat,
+    /// Pick which app to assign a just-registered fine-tuned model to.
+    PublishModel,
 }
 
 /// An entry in the Onde inference model picker.
@@ -247,6 +249,9 @@ pub enum AuthEvent {
         model_id: String,
     },
     ModelAssignFailed(String),
+    // publish: register a freshly HF-uploaded fine-tune into the catalog
+    ModelRegistered(OndeModel),
+    ModelRegisterFailed(String),
     // downloads (catalog merged with local HF cache)
     DownloadsLoaded(Vec<crate::hf::MergedModel>),
     #[allow(dead_code)] // reserved for future explicit error reporting
@@ -597,6 +602,26 @@ impl App {
                 self.busy = false;
                 self.status = Status::error(msg);
             }
+            // publish
+            AuthEvent::ModelRegistered(model) => {
+                self.busy = false;
+                let model_name = model
+                    .name
+                    .clone()
+                    .or_else(|| model.hf_repo_id.clone())
+                    .unwrap_or_else(|| "Model".to_string());
+                self.models.push(model);
+                self.models_cursor = self.models.len() - 1;
+                self.screen = Screen::PublishModel;
+                self.apps_cursor = 0;
+                self.apps_offset = 0;
+                self.status =
+                    Status::success(format!("{model_name} registered. Pick an app to assign it to."));
+            }
+            AuthEvent::ModelRegisterFailed(msg) => {
+                self.busy = false;
+                self.status = Status::error(format!("Registration failed: {msg}"));
+            }
             // downloads
             AuthEvent::DownloadsLoaded(models) => {
                 self.busy = false;
@@ -927,6 +952,7 @@ fn handle_key(
         Screen::FineTune => handle_key_finetune(app, key, tx),
         Screen::CloneRepo => handle_key_clone_repo(app, key, tx),
         Screen::Chat => handle_key_chat(app, key, tx),
+        Screen::PublishModel => handle_key_publish_model(app, key, tx),
     }
 }
 
@@ -1629,6 +1655,9 @@ fn handle_key_gguf_detail(
                 app.upload_progress = None;
                 app.status = Status::success(format!("Uploaded: {url_owned}"));
             }
+            (Char('a'), KeyModifiers::NONE) => {
+                trigger_publish_model(app, tx);
+            }
             (Char('c'), KeyModifiers::CONTROL) => {
                 app.should_quit = true;
             }
@@ -1713,6 +1742,131 @@ fn handle_key_gguf_detail(
                 .is_some_and(|g| g.is_uploadable()) =>
         {
             app.upload_repo_name.push(c);
+        }
+        _ => {}
+    }
+}
+
+/// Registers the just-uploaded GGUF into the GresIQ catalog, private to this
+/// account, then moves to the app picker so it can be assigned right away.
+fn trigger_publish_model(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    if app.busy {
+        return;
+    }
+    let Some(ref gguf) = app.selected_gguf else {
+        return;
+    };
+    let hf_repo_id = app.upload_repo_name.clone();
+    if hf_repo_id.is_empty() {
+        app.status = Status::error("No uploaded repo to register.");
+        return;
+    }
+    let gguf_file = gguf.file_name.clone();
+    let approx_size_bytes = std::fs::metadata(&gguf.path).ok().map(|m| m.len() as i64);
+    let base_model_id = app.current_project.as_ref().map(|p| p.base_model_id.clone());
+    let (base_name, family, parameter_class) = derive_base_model_meta(base_model_id.as_deref());
+    let display_name = format!("{base_name} (Fine-tuned)");
+    let token = token::load().unwrap_or_default();
+
+    // Make sure the apps list is ready by the time the picker shows up.
+    if !app.apps_loaded {
+        trigger_load_apps(app, tx.clone());
+    }
+
+    app.busy = true;
+    app.status = Status::neutral("Registering model…");
+
+    tokio::spawn(async move {
+        match crate::gresiq::create_model(
+            &token,
+            &hf_repo_id,
+            &display_name,
+            &family,
+            &parameter_class,
+            Some(&gguf_file),
+            approx_size_bytes,
+        )
+        .await
+        {
+            Ok(model) => {
+                let _ = tx.send(AuthEvent::ModelRegistered(model));
+            }
+            Err(e) => {
+                let _ = tx.send(AuthEvent::ModelRegisterFailed(e.to_string()));
+            }
+        }
+    });
+}
+
+/// Best-effort display name / family / parameter class for a fine-tune,
+/// derived from the base model it was trained from. Falls back to generic
+/// values when the base model isn't one of the officially supported ones.
+fn derive_base_model_meta(base_model_id: Option<&str>) -> (String, String, String) {
+    let base_model_id = base_model_id.unwrap_or("");
+    let info = onde::inference::models::SUPPORTED_MODEL_INFO
+        .iter()
+        .find(|i| i.id == base_model_id);
+
+    let base_name = info.map(|i| i.name.to_string()).unwrap_or_else(|| {
+        base_model_id
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Custom model")
+            .to_string()
+    });
+
+    let haystack = format!("{base_model_id} {base_name}").to_lowercase();
+    let family = if haystack.contains("qwen3") {
+        "qwen3"
+    } else if haystack.contains("qwen2.5-coder") || haystack.contains("qwen2_5-coder") {
+        "qwen2.5-coder"
+    } else if haystack.contains("qwen2.5") || haystack.contains("qwen2_5") {
+        "qwen2.5"
+    } else {
+        "custom"
+    }
+    .to_string();
+
+    const SIZES: &[&str] = &["0.5B", "1.5B", "3B", "4B", "7B", "14B", "32B", "72B"];
+    let haystack_upper = haystack.to_uppercase();
+    let parameter_class = SIZES
+        .iter()
+        .find(|s| haystack_upper.contains(*s))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    (base_name, family, parameter_class)
+}
+
+fn handle_key_publish_model(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    match (key.code, key.modifiers) {
+        (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+            app.apps_cursor = app.apps_cursor.saturating_sub(1);
+            clamp_apps_scroll(app, MAX_VISIBLE);
+        }
+        (Down, _) | (Char('j'), KeyModifiers::NONE) => {
+            if app.apps_cursor + 1 < app.apps.len() {
+                app.apps_cursor += 1;
+            }
+            clamp_apps_scroll(app, MAX_VISIBLE);
+        }
+        (Enter, _) if !app.apps.is_empty() => {
+            app.assigning_for_app_index = Some(app.apps_cursor);
+            submit_assign_model(app, tx);
+        }
+        (Esc, _) => {
+            app.screen = Screen::GgufDetail;
+            app.status = Status::neutral("Model registered — assign it later from Apps.");
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
         }
         _ => {}
     }
@@ -2838,4 +2992,43 @@ fn trigger_inference_download(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_base_model_meta_known_qwen3() {
+        let (name, family, parameter_class) =
+            derive_base_model_meta(Some("bartowski/Qwen_Qwen3-4B-GGUF"));
+        assert_eq!(family, "qwen3");
+        assert_eq!(parameter_class, "4B");
+        assert!(!name.is_empty());
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_known_qwen25_coder() {
+        let (_, family, parameter_class) = derive_base_model_meta(Some(
+            "bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+        ));
+        assert_eq!(family, "qwen2.5-coder");
+        assert_eq!(parameter_class, "1.5B");
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_unknown_falls_back() {
+        let (name, family, parameter_class) = derive_base_model_meta(Some("someone/mystery-model"));
+        assert_eq!(family, "custom");
+        assert_eq!(parameter_class, "unknown");
+        assert_eq!(name, "mystery-model");
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_none() {
+        let (name, family, parameter_class) = derive_base_model_meta(None);
+        assert_eq!(family, "custom");
+        assert_eq!(parameter_class, "unknown");
+        assert_eq!(name, "Custom model");
+    }
 }
