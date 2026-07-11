@@ -2,15 +2,15 @@
 name = "onde-cli"
 version = "0.3.1"
 edition = "2024"
-description = "Terminal UI for signing up, signing in, and managing your Onde Inference account."
+description = "Terminal UI to fine-tune model and manage your Onde Inference account."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ondeinference/onde-cli"
-homepage = "https://ondeinference.com"
+homepage = "https://ondeinference.com/cli"
 documentation = "https://docs.rs/onde-cli"
 readme = "README.md"
 keywords = ["onde", "cli", "tui", "auth", "inference"]
 categories = ["command-line-utilities"]
-authors = ["Seto Elkahfi <hej@setoelkahfi.se>"]
+authors = ["Seto Elkahfi <seto@ondeinference.com>"]
 
 [[bin]]
 name = "onde"
@@ -41,7 +41,7 @@ serde_json = "1"
 half = "2"
 sha2 = "0.10"
 # onde = { path = "../onde" }
-onde = "1.0.0"
+onde = "1.1.4"
 
 # Metal and Accelerate are macOS-only frameworks; Cargo merges features so on
 # macOS these are added on top of the base candle-core dep above.

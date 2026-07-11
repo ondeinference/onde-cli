@@ -194,7 +194,13 @@ fn run_finetune(
         .context("reading training data")?;
 
     let total_lines = raw_lines.len();
-    let mut token_batches: Vec<Vec<u32>> = Vec::new();
+
+    struct TrainingExample {
+        tokens: Vec<u32>,
+        mask: Vec<bool>,
+    }
+
+    let mut examples: Vec<TrainingExample> = Vec::new();
 
     for (i, line) in raw_lines.iter().enumerate() {
         let line = line.trim();
@@ -209,21 +215,67 @@ fn run_finetune(
         let entry: DataEntry =
             serde_json::from_str(line).with_context(|| format!("parsing JSONL line {}", i + 1))?;
 
+        let (rendered_text, assistant_spans) = match &entry {
+            DataEntry::Raw { text } => (text.clone(), Vec::new()),
+            DataEntry::Messages { messages } => render_chatml(messages),
+        };
+
         let encoding = tokenizer
-            .encode(entry.text.as_str(), false)
+            .encode(rendered_text.as_str(), false)
             .map_err(|e| anyhow::anyhow!("tokenizing line {}: {e}", i + 1))?;
 
         let ids = encoding.get_ids();
-        let ids: Vec<u32> = if ids.len() > config.max_seq_len {
-            ids[..config.max_seq_len].to_vec()
+        let offsets = encoding.get_offsets();
+
+        // Truncate ids and offsets together to max_seq_len
+        let (ids, offsets) = if ids.len() > config.max_seq_len {
+            (
+                ids[..config.max_seq_len].to_vec(),
+                offsets[..config.max_seq_len].to_vec(),
+            )
         } else {
-            ids.to_vec()
+            (ids.to_vec(), offsets.to_vec())
         };
 
         // Need at least 2 tokens for next-token prediction.
-        if ids.len() >= 2 {
-            token_batches.push(ids);
+        if ids.len() < 2 {
+            eprintln!(
+                "[finetune] WARNING: skipping line {} (too short: {} tokens)",
+                i + 1,
+                ids.len()
+            );
+            let _ = tx.send(FineTuneProgress::Tokenizing {
+                done: i + 1,
+                total: total_lines,
+            });
+            continue;
         }
+
+        let mask = if assistant_spans.is_empty() {
+            // Raw format: full-sequence loss (backward compatible)
+            vec![true; ids.len()]
+        } else {
+            // Messages format: mask only assistant completions
+            compute_loss_mask(&offsets, &assistant_spans)
+        };
+
+        // For Messages entries, check that the shifted mask has at least one true
+        if !assistant_spans.is_empty() && mask.len() > 1 {
+            let shifted_mask = &mask[1..];
+            if !shifted_mask.iter().any(|&m| m) {
+                eprintln!(
+                    "[finetune] WARNING: skipping line {} (assistant content truncated away)",
+                    i + 1
+                );
+                let _ = tx.send(FineTuneProgress::Tokenizing {
+                    done: i + 1,
+                    total: total_lines,
+                });
+                continue;
+            }
+        }
+
+        examples.push(TrainingExample { tokens: ids, mask });
 
         let _ = tx.send(FineTuneProgress::Tokenizing {
             done: i + 1,
@@ -231,7 +283,7 @@ fn run_finetune(
         });
     }
 
-    if token_batches.is_empty() {
+    if examples.is_empty() {
         anyhow::bail!("no valid training examples found in {:?}", config.data_path);
     }
 
@@ -246,15 +298,15 @@ fn run_finetune(
     let mut optimizer =
         AdamW::new(lora_vars.clone(), adamw_params).context("creating AdamW optimizer")?;
 
-    let total_steps = token_batches.len();
+    let total_steps = examples.len();
     let vocab_size = model_cfg.vocab_size;
     let max_grad_norm: f64 = 1.0;
 
     for epoch in 0..config.epochs {
-        for (step, batch_tokens) in token_batches.iter().enumerate() {
-            let seq_len = batch_tokens.len();
+        for (step, example) in examples.iter().enumerate() {
+            let seq_len = example.tokens.len();
 
-            let input_ids = Tensor::from_slice(batch_tokens.as_slice(), (1, seq_len), &device)
+            let input_ids = Tensor::from_slice(example.tokens.as_slice(), (1, seq_len), &device)
                 .context("building input_ids tensor")?;
 
             let logits = model.forward(&input_ids).context("model forward pass")?;
@@ -265,10 +317,50 @@ fn run_finetune(
                 .and_then(|t| t.reshape((seq_len - 1, vocab_size)))
                 .context("preparing shifted logits")?;
 
-            let targets = Tensor::from_slice(&batch_tokens[1..], (seq_len - 1,), &device)
+            let targets = Tensor::from_slice(&example.tokens[1..], (seq_len - 1,), &device)
                 .context("building target tensor")?;
 
-            let loss = candle_nn::loss::cross_entropy(&logits_shifted, &targets)
+            let shifted_mask = &example.mask[1..];
+
+            // Fast path: if all tokens are active (typical for Raw entries), skip index_select
+            let (logits_masked, targets_masked) = if shifted_mask.iter().all(|&m| m) {
+                (logits_shifted.clone(), targets.clone())
+            } else {
+                // Masked path: keep only the positions where mask is true
+                let keep: Vec<u32> = shifted_mask
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, &m)| if m { Some(i as u32) } else { None })
+                    .collect();
+
+                if keep.is_empty() {
+                    eprintln!(
+                        "[finetune] WARNING: no masked tokens at epoch {} step {}, skipping",
+                        epoch + 1,
+                        step + 1
+                    );
+                    let _ = tx.send(FineTuneProgress::Training {
+                        epoch: epoch + 1,
+                        total_epochs: config.epochs,
+                        step: step + 1,
+                        total_steps,
+                        loss: 0.0,
+                    });
+                    continue;
+                }
+
+                let keep_idx = Tensor::from_slice(keep.as_slice(), (keep.len(),), &device)
+                    .context("building keep indices")?;
+                let logits_masked = logits_shifted
+                    .index_select(&keep_idx, 0)
+                    .context("indexing logits")?;
+                let targets_masked = targets
+                    .index_select(&keep_idx, 0)
+                    .context("indexing targets")?;
+                (logits_masked, targets_masked)
+            };
+
+            let loss = candle_nn::loss::cross_entropy(&logits_masked, &targets_masked)
                 .context("computing cross-entropy loss")?;
 
             let loss_val = loss.to_scalar::<f32>().context("reading loss scalar")?;
@@ -433,8 +525,64 @@ struct ModelConfig {
 }
 
 #[derive(serde::Deserialize)]
-struct DataEntry {
-    text: String,
+#[serde(untagged)]
+enum DataEntry {
+    Messages { messages: Vec<DatasetMessage> },
+    Raw { text: String },
+}
+
+#[derive(serde::Deserialize)]
+struct DatasetMessage {
+    role: String,
+    content: String,
+}
+
+/// Renders `messages` as literal Qwen ChatML, matching the format written by
+/// hand in existing `Raw` datasets. Returns the rendered string plus byte-offset
+/// spans of every assistant turn (content start through the end of that turn's
+/// closing `<|im_end|>`, which is included so the model learns to emit it; the
+/// trailing `\n` is not) for loss-mask computation.
+fn render_chatml(messages: &[DatasetMessage]) -> (String, Vec<(usize, usize)>) {
+    let mut output = String::new();
+    let mut assistant_spans = Vec::new();
+
+    for msg in messages {
+        output.push_str("<|im_start|>");
+        output.push_str(&msg.role);
+        output.push('\n');
+
+        let content_start = output.len();
+        output.push_str(&msg.content);
+        output.push_str("<|im_end|>");
+
+        if msg.role == "assistant" {
+            // Span end is *after* `<|im_end|>` so the closing marker is masked
+            // in for loss: the model has to learn to emit it, otherwise
+            // generations never terminate. Whether the marker tokenizes as one
+            // special token or splits into several is irrelevant here — every
+            // resulting token's byte offset falls inside this span.
+            let span_end = output.len();
+            assistant_spans.push((content_start, span_end));
+        }
+
+        output.push('\n');
+    }
+
+    (output, assistant_spans)
+}
+
+/// Pure function: true where a token's byte-offset range overlaps any
+/// assistant span. Decoupled from tokenizer types so it's unit-testable
+/// with synthetic data.
+fn compute_loss_mask(offsets: &[(usize, usize)], assistant_spans: &[(usize, usize)]) -> Vec<bool> {
+    offsets
+        .iter()
+        .map(|&(token_start, token_end)| {
+            assistant_spans
+                .iter()
+                .any(|&(span_start, span_end)| token_start < span_end && token_end > span_start)
+        })
+        .collect()
 }
 
 /// Top-level structure of `model.safetensors.index.json`.
@@ -1001,5 +1149,362 @@ impl LoraQwenModel {
             .with_context(|| format!("writing {:?}", path))?;
 
         Ok(path)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dataentry_raw_deserialization() {
+        let json = r#"{"text":"hello world"}"#;
+        let entry: DataEntry = serde_json::from_str(json).unwrap();
+        match entry {
+            DataEntry::Raw { text } => assert_eq!(text, "hello world"),
+            _ => panic!("expected Raw variant"),
+        }
+    }
+
+    #[test]
+    fn test_dataentry_messages_deserialization() {
+        let json = r#"{"messages":[{"role":"user","content":"hi"}]}"#;
+        let entry: DataEntry = serde_json::from_str(json).unwrap();
+        match entry {
+            DataEntry::Messages { messages } => {
+                assert_eq!(messages.len(), 1);
+                assert_eq!(messages[0].role, "user");
+                assert_eq!(messages[0].content, "hi");
+            }
+            _ => panic!("expected Messages variant"),
+        }
+    }
+
+    #[test]
+    fn test_dataentry_invalid() {
+        let json = r#"{"invalid":"field"}"#;
+        let result: Result<DataEntry, _> = serde_json::from_str(json);
+        assert!(result.is_err(), "should reject unrecognized format");
+    }
+
+    #[test]
+    fn test_render_chatml_basic() {
+        let messages = vec![
+            DatasetMessage {
+                role: "system".to_string(),
+                content: "You are helpful".to_string(),
+            },
+            DatasetMessage {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+            },
+            DatasetMessage {
+                role: "assistant".to_string(),
+                content: "Hi there".to_string(),
+            },
+        ];
+
+        let (rendered, spans) = render_chatml(&messages);
+
+        assert!(
+            rendered.contains("<|im_start|>system"),
+            "should contain system marker"
+        );
+        assert!(
+            rendered.contains("You are helpful"),
+            "should contain system content"
+        );
+        assert!(
+            rendered.contains("<|im_start|>user"),
+            "should contain user marker"
+        );
+        assert!(rendered.contains("Hello"), "should contain user content");
+        assert!(
+            rendered.contains("<|im_start|>assistant"),
+            "should contain assistant marker"
+        );
+        assert!(
+            rendered.contains("Hi there"),
+            "should contain assistant content"
+        );
+
+        assert_eq!(spans.len(), 1, "should have exactly one assistant span");
+        let (start, end) = spans[0];
+        // The span covers the assistant content and its closing `<|im_end|>`,
+        // so the model is trained to emit the stop marker.
+        assert!(rendered[start..end].contains("Hi there"));
+        assert!(rendered[start..end].ends_with("<|im_end|>"));
+        // Only the trailing newline remains after the span.
+        assert!(rendered[end..].starts_with('\n'));
+    }
+
+    #[test]
+    fn test_render_chatml_multi_assistant() {
+        let messages = vec![
+            DatasetMessage {
+                role: "assistant".to_string(),
+                content: "First".to_string(),
+            },
+            DatasetMessage {
+                role: "user".to_string(),
+                content: "Second".to_string(),
+            },
+            DatasetMessage {
+                role: "assistant".to_string(),
+                content: "Third".to_string(),
+            },
+        ];
+
+        let (_rendered, spans) = render_chatml(&messages);
+        assert_eq!(spans.len(), 2, "should have exactly two assistant spans");
+    }
+
+    #[test]
+    fn test_render_chatml_no_assistant() {
+        let messages = vec![DatasetMessage {
+            role: "user".to_string(),
+            content: "Just a question".to_string(),
+        }];
+
+        let (_rendered, spans) = render_chatml(&messages);
+        assert_eq!(spans.len(), 0, "should have no assistant spans");
+    }
+
+    #[test]
+    fn test_render_chatml_utf8_indonesian() {
+        let messages = vec![
+            DatasetMessage {
+                role: "user".to_string(),
+                content: "Apa kabar? Ini ada diacritik: é".to_string(),
+            },
+            DatasetMessage {
+                role: "assistant".to_string(),
+                content: "Baik-baik saja. Jawaban dengan: ñ dan ü".to_string(),
+            },
+        ];
+
+        let (rendered, spans) = render_chatml(&messages);
+        assert_eq!(spans.len(), 1, "should have one assistant span");
+
+        let (start, end) = spans[0];
+        let assistant_content = &rendered[start..end];
+        assert!(assistant_content.contains("Baik-baik saja"));
+        assert!(assistant_content.contains("ñ"));
+        assert!(assistant_content.contains("ü"));
+    }
+
+    #[test]
+    fn test_compute_loss_mask_all_inside() {
+        let offsets = vec![(10, 15), (15, 20), (20, 25)];
+        let spans = vec![(0, 30)];
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        assert_eq!(mask, vec![true, true, true]);
+    }
+
+    #[test]
+    fn test_compute_loss_mask_all_outside() {
+        let offsets = vec![(0, 5), (5, 10), (40, 45)];
+        let spans = vec![(20, 30)];
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        assert_eq!(mask, vec![false, false, false]);
+    }
+
+    #[test]
+    fn test_compute_loss_mask_straddling_start() {
+        let offsets = vec![(15, 25), (25, 35)];
+        let spans = vec![(20, 40)];
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        // First token [15, 25) overlaps [20, 40) → true
+        // Second token [25, 35) overlaps [20, 40) → true
+        assert_eq!(mask, vec![true, true]);
+    }
+
+    #[test]
+    fn test_compute_loss_mask_straddling_end() {
+        let offsets = vec![(10, 25), (25, 35)];
+        let spans = vec![(15, 30)];
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        // First token [10, 25) overlaps [15, 30) → true
+        // Second token [25, 35) overlaps [15, 30) → true
+        assert_eq!(mask, vec![true, true]);
+    }
+
+    #[test]
+    fn test_compute_loss_mask_zero_length_span() {
+        // A zero-length span occurs when assistant content is empty — the
+        // span collapses to a single point where content_start == end_tag_start.
+        // Any token whose range contains that point (e.g. the immediately
+        // following `<|im_end|>` token) must still be masked true, since the
+        // model needs to learn to emit `<|im_end|>` right after the role
+        // header even for an empty response.
+        let offsets = vec![(10, 20), (20, 30)];
+        let spans = vec![(15, 15)]; // zero-length at byte 15
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        // Token [10, 20) contains the zero-length span's point (15) → true.
+        // Token [20, 30) does not → false.
+        assert_eq!(mask, vec![true, false]);
+    }
+
+    #[test]
+    fn test_compute_loss_mask_multiple_spans() {
+        let offsets = vec![(0, 5), (5, 10), (10, 15), (15, 20), (20, 25)];
+        let spans = vec![(2, 12), (18, 22)];
+        let mask = compute_loss_mask(&offsets, &spans);
+
+        // [0, 5) overlaps [2, 12) → true
+        // [5, 10) overlaps [2, 12) → true
+        // [10, 15) overlaps [2, 12) → true
+        // [15, 20) overlaps [18, 22) → true
+        // [20, 25) overlaps [18, 22) → true
+        assert_eq!(mask, vec![true, true, true, true, true]);
+    }
+
+    #[test]
+    fn test_assistant_span_masks_closing_im_end() {
+        // The closing `<|im_end|>` of an assistant turn must be masked in for
+        // loss so the model learns to stop. Its byte range must fall inside the
+        // reported span, and every token it produces must be masked true —
+        // whether the marker tokenizes as one special token or splits into
+        // several literal pieces (which can happen with add_special_tokens=false).
+        let messages = vec![DatasetMessage {
+            role: "assistant".to_string(),
+            content: "Hi".to_string(),
+        }];
+
+        let (rendered, spans) = render_chatml(&messages);
+        assert_eq!(spans.len(), 1);
+        let (span_start, span_end) = spans[0];
+
+        let marker = "<|im_end|>";
+        let marker_start = rendered.find(marker).expect("marker present");
+        let marker_end = marker_start + marker.len();
+
+        // The marker's whole byte range sits within the assistant span.
+        assert!(marker_start >= span_start && marker_end <= span_end);
+
+        // Single-token marker → masked.
+        let single = compute_loss_mask(&[(marker_start, marker_end)], &spans);
+        assert_eq!(single, vec![true]);
+
+        // Split marker (e.g. "<|", "im", "_end", "|>") → every piece masked.
+        let split = compute_loss_mask(
+            &[
+                (marker_start, marker_start + 2),
+                (marker_start + 2, marker_start + 4),
+                (marker_start + 4, marker_start + 8),
+                (marker_start + 8, marker_end),
+            ],
+            &spans,
+        );
+        assert_eq!(split, vec![true, true, true, true]);
+    }
+
+    /// Resolve a locally cached Qwen3 `tokenizer.json`, if present, so the
+    /// real-tokenizer test below can skip gracefully on machines without the
+    /// model. Honours `ONDE_TEST_MODEL_DIR` (a dir containing `tokenizer.json`)
+    /// and otherwise falls back to the Onde App Group container cache.
+    fn qwen3_tokenizer_path() -> Option<PathBuf> {
+        if let Ok(dir) = std::env::var("ONDE_TEST_MODEL_DIR") {
+            let p = PathBuf::from(dir).join("tokenizer.json");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        let snapshots = dirs::home_dir()?
+            .join("Library/Group Containers/group.com.ondeinference.apps")
+            .join("models/hub/models--Qwen--Qwen3-0.6B/snapshots");
+        std::fs::read_dir(&snapshots)
+            .ok()?
+            .flatten()
+            .map(|e| e.path().join("tokenizer.json"))
+            .find(|p| p.exists())
+    }
+
+    /// Regression guard for the offset-based loss mask against the *real* Qwen3
+    /// tokenizer (siGit review, PR #6): confirms that with
+    /// `add_special_tokens=false` the ChatML markers still tokenize as single
+    /// special tokens carrying real byte offsets — not synthesized `(0, 0)` /
+    /// zero-length spans that would let the closing `<|im_end|>` escape the
+    /// mask. Skips when the model is not cached locally.
+    #[test]
+    fn test_real_tokenizer_masks_assistant_and_im_end() {
+        let Some(tok_path) = qwen3_tokenizer_path() else {
+            eprintln!("Qwen3 tokenizer not found locally; skipping");
+            return;
+        };
+        let tokenizer = Tokenizer::from_file(&tok_path).expect("load tokenizer");
+
+        let messages = vec![
+            DatasetMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+            },
+            DatasetMessage {
+                role: "assistant".to_string(),
+                content: "Hello there!".to_string(),
+            },
+        ];
+        let (rendered, spans) = render_chatml(&messages);
+
+        // add_special_tokens=false mirrors the training tokenization path.
+        let encoding = tokenizer.encode(rendered.as_str(), false).unwrap();
+        let offsets = encoding.get_offsets();
+        let tokens = encoding.get_tokens();
+
+        // `<|im_end|>` must survive as a single token with a real, non-empty
+        // offset — not a split into literal pieces and not a `(0, 0)` offset.
+        let im_end_positions: Vec<usize> = tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.as_str() == "<|im_end|>")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            im_end_positions.len(),
+            2,
+            "expected one <|im_end|> per turn as a single token"
+        );
+        for &i in &im_end_positions {
+            let (s, e) = offsets[i];
+            assert!(
+                e > s,
+                "<|im_end|> at token {i} has a zero-length offset {:?}",
+                (s, e)
+            );
+        }
+
+        let mask = compute_loss_mask(offsets, &spans);
+
+        // The assistant's closing `<|im_end|>` (the second one) must be masked
+        // in; if its offset were synthesized it would fall outside the span and
+        // this would fail — exactly the escape the review flagged.
+        let assistant_im_end = *im_end_positions.last().unwrap();
+        assert!(
+            mask[assistant_im_end],
+            "assistant closing <|im_end|> escaped the loss mask"
+        );
+
+        // The assistant content tokens are masked; the user turn and the
+        // trailing newline after the assistant turn are not.
+        let hello = tokens.iter().position(|t| t.contains("Hello")).unwrap();
+        assert!(mask[hello], "assistant content should be masked in");
+        let user_hi = tokens.iter().position(|t| t.as_str() == "hi").unwrap();
+        assert!(!mask[user_hi], "user content must not be masked in");
+        // Newline token immediately after the assistant <|im_end|>.
+        if let Some(nl) = offsets.get(assistant_im_end + 1) {
+            assert!(
+                !compute_loss_mask(&[*nl], &spans)[0],
+                "trailing newline after assistant turn must not be masked"
+            );
+        }
     }
 }
