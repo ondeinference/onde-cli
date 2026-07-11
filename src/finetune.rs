@@ -553,9 +553,9 @@ fn render_chatml(messages: &[DatasetMessage]) -> (String, Vec<(usize, usize)>) {
 
         let content_start = output.len();
         output.push_str(&msg.content);
+        output.push_str("<|im_end|>");
 
         if msg.role == "assistant" {
-            output.push_str("<|im_end|>");
             // Span end is *after* `<|im_end|>` so the closing marker is masked
             // in for loss: the model has to learn to emit it, otherwise
             // generations never terminate. Whether the marker tokenizes as one
@@ -563,8 +563,6 @@ fn render_chatml(messages: &[DatasetMessage]) -> (String, Vec<(usize, usize)>) {
             // resulting token's byte offset falls inside this span.
             let span_end = output.len();
             assistant_spans.push((content_start, span_end));
-        } else {
-            output.push_str("<|im_end|>");
         }
 
         output.push('\n');
@@ -1408,5 +1406,105 @@ mod tests {
             &spans,
         );
         assert_eq!(split, vec![true, true, true, true]);
+    }
+
+    /// Resolve a locally cached Qwen3 `tokenizer.json`, if present, so the
+    /// real-tokenizer test below can skip gracefully on machines without the
+    /// model. Honours `ONDE_TEST_MODEL_DIR` (a dir containing `tokenizer.json`)
+    /// and otherwise falls back to the Onde App Group container cache.
+    fn qwen3_tokenizer_path() -> Option<PathBuf> {
+        if let Ok(dir) = std::env::var("ONDE_TEST_MODEL_DIR") {
+            let p = PathBuf::from(dir).join("tokenizer.json");
+            if p.exists() {
+                return Some(p);
+            }
+        }
+        let snapshots = dirs::home_dir()?
+            .join("Library/Group Containers/group.com.ondeinference.apps")
+            .join("models/hub/models--Qwen--Qwen3-0.6B/snapshots");
+        std::fs::read_dir(&snapshots)
+            .ok()?
+            .flatten()
+            .map(|e| e.path().join("tokenizer.json"))
+            .find(|p| p.exists())
+    }
+
+    /// Regression guard for the offset-based loss mask against the *real* Qwen3
+    /// tokenizer (siGit review, PR #6): confirms that with
+    /// `add_special_tokens=false` the ChatML markers still tokenize as single
+    /// special tokens carrying real byte offsets — not synthesized `(0, 0)` /
+    /// zero-length spans that would let the closing `<|im_end|>` escape the
+    /// mask. Skips when the model is not cached locally.
+    #[test]
+    fn test_real_tokenizer_masks_assistant_and_im_end() {
+        let Some(tok_path) = qwen3_tokenizer_path() else {
+            eprintln!("Qwen3 tokenizer not found locally; skipping");
+            return;
+        };
+        let tokenizer = Tokenizer::from_file(&tok_path).expect("load tokenizer");
+
+        let messages = vec![
+            DatasetMessage {
+                role: "user".to_string(),
+                content: "hi".to_string(),
+            },
+            DatasetMessage {
+                role: "assistant".to_string(),
+                content: "Hello there!".to_string(),
+            },
+        ];
+        let (rendered, spans) = render_chatml(&messages);
+
+        // add_special_tokens=false mirrors the training tokenization path.
+        let encoding = tokenizer.encode(rendered.as_str(), false).unwrap();
+        let offsets = encoding.get_offsets();
+        let tokens = encoding.get_tokens();
+
+        // `<|im_end|>` must survive as a single token with a real, non-empty
+        // offset — not a split into literal pieces and not a `(0, 0)` offset.
+        let im_end_positions: Vec<usize> = tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.as_str() == "<|im_end|>")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            im_end_positions.len(),
+            2,
+            "expected one <|im_end|> per turn as a single token"
+        );
+        for &i in &im_end_positions {
+            let (s, e) = offsets[i];
+            assert!(
+                e > s,
+                "<|im_end|> at token {i} has a zero-length offset {:?}",
+                (s, e)
+            );
+        }
+
+        let mask = compute_loss_mask(offsets, &spans);
+
+        // The assistant's closing `<|im_end|>` (the second one) must be masked
+        // in; if its offset were synthesized it would fall outside the span and
+        // this would fail — exactly the escape the review flagged.
+        let assistant_im_end = *im_end_positions.last().unwrap();
+        assert!(
+            mask[assistant_im_end],
+            "assistant closing <|im_end|> escaped the loss mask"
+        );
+
+        // The assistant content tokens are masked; the user turn and the
+        // trailing newline after the assistant turn are not.
+        let hello = tokens.iter().position(|t| t.contains("Hello")).unwrap();
+        assert!(mask[hello], "assistant content should be masked in");
+        let user_hi = tokens.iter().position(|t| t.as_str() == "hi").unwrap();
+        assert!(!mask[user_hi], "user content must not be masked in");
+        // Newline token immediately after the assistant <|im_end|>.
+        if let Some(nl) = offsets.get(assistant_im_end + 1) {
+            assert!(
+                !compute_loss_mask(&[*nl], &spans)[0],
+                "trailing newline after assistant turn must not be masked"
+            );
+        }
     }
 }
