@@ -367,7 +367,7 @@ fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(rest);
 
-        render_apps_list(frame, app, bottom[0]);
+        render_apps_list(frame, app, bottom[0], "No apps yet. Press n to create one.");
 
         frame.render_widget(
             Paragraph::new("New app name:").style(Style::new().fg(C_MUTED)),
@@ -385,7 +385,7 @@ fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(rest);
 
-        render_apps_list(frame, app, bottom[0]);
+        render_apps_list(frame, app, bottom[0], "No apps yet. Press n to create one.");
         frame.render_widget(
             Paragraph::new("n · new   Enter · open   s · sign out").style(Style::new().fg(C_MUTED)),
             bottom[1],
@@ -393,7 +393,7 @@ fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_apps_list(frame: &mut Frame, app: &App, area: Rect) {
+fn render_apps_list(frame: &mut Frame, app: &App, area: Rect, empty_hint: &str) {
     if app.apps.is_empty() {
         // Keyed on apps_loaded rather than busy: busy can flip back to
         // false from an unrelated concurrent event (e.g. a model
@@ -406,8 +406,7 @@ fn render_apps_list(frame: &mut Frame, app: &App, area: Rect) {
             );
         } else {
             frame.render_widget(
-                Paragraph::new("  No apps yet. Press n to create one.")
-                    .style(Style::new().fg(C_MUTED)),
+                Paragraph::new(format!("  {empty_hint}")).style(Style::new().fg(C_MUTED)),
                 area,
             );
         }
@@ -502,7 +501,12 @@ fn render_publish_model(frame: &mut Frame, app: &App, area: Rect) {
         rows[3],
     );
 
-    render_apps_list(frame, app, rows[4]);
+    render_apps_list(
+        frame,
+        app,
+        rows[4],
+        "No apps yet. Create one from the Apps screen, then come back to assign this model.",
+    );
     render_status(frame, app, rows[6]);
 }
 

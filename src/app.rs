@@ -1783,7 +1783,10 @@ fn trigger_publish_model(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
     let display_name = format!("{base_name} (Fine-tuned)");
     let token = token::load().unwrap_or_default();
 
-    // Make sure the apps list is ready by the time the picker shows up.
+    // Make sure the apps list is ready by the time the picker shows up. This
+    // must run before `app.busy` is set below -- trigger_load_apps early-
+    // returns if busy is already true, so reordering these two would make
+    // the apps fetch silently no-op.
     if !app.apps_loaded {
         trigger_load_apps(app, tx.clone());
     }
@@ -1813,17 +1816,22 @@ fn trigger_publish_model(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
     });
 }
 
-/// True if `size` (e.g. "3B") appears in `haystack` as its own token, not as
-/// the tail of a larger number -- "3B" is a plain substring of "13B"/"43B",
-/// so a naive `.contains()` would misdetect those as "3B".
+/// True if `size` (e.g. "3B") appears in `haystack` as its own token, bounded
+/// on both sides by a non-alphanumeric character (or the string edge). "3B"
+/// is a plain substring of "13B"/"43B" (digit before) and of "3BETA"/"3B2"
+/// (alphanumeric after), so a naive `.contains()` would misdetect those.
 fn contains_size_token(haystack: &str, size: &str) -> bool {
     let mut start = 0;
     while let Some(idx) = haystack[start..].find(size) {
         let abs_idx = start + idx;
+        let end_idx = abs_idx + size.len();
         let preceded_by_digit = haystack.as_bytes()[..abs_idx]
             .last()
             .is_some_and(u8::is_ascii_digit);
-        if !preceded_by_digit {
+        let followed_by_alnum = haystack.as_bytes()[end_idx..]
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric);
+        if !preceded_by_digit && !followed_by_alnum {
             return true;
         }
         start = abs_idx + 1;
@@ -3114,5 +3122,15 @@ mod tests {
         // "13B" contains the substring "3B" -- this must not resolve to "3B".
         let (_, _, parameter_class) = derive_base_model_meta(Some("someone/Mystery-13B-GGUF"));
         assert_eq!(parameter_class, "unknown");
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_size_not_matched_mid_word() {
+        // "3B" is a substring of both "3BETA" (trailing letter) and "3B2"
+        // (trailing digit) -- neither should resolve to "3B".
+        let (_, _, beta) = derive_base_model_meta(Some("someone/Mystery-3BETA-GGUF"));
+        assert_eq!(beta, "unknown");
+        let (_, _, versioned) = derive_base_model_meta(Some("someone/Mystery-3B2-GGUF"));
+        assert_eq!(versioned, "unknown");
     }
 }
