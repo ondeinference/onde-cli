@@ -395,12 +395,16 @@ fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_apps_list(frame: &mut Frame, app: &App, area: Rect) {
     if app.apps.is_empty() {
-        if app.busy {
+        // Keyed on apps_loaded rather than busy: busy can flip back to
+        // false from an unrelated concurrent event (e.g. a model
+        // registration finishing before the apps fetch does) while the
+        // apps list is still genuinely in flight.
+        if !app.apps_loaded {
             frame.render_widget(
                 Paragraph::new("  Loading…").style(Style::new().fg(C_MUTED)),
                 area,
             );
-        } else if app.apps_loaded {
+        } else {
             frame.render_widget(
                 Paragraph::new("  No apps yet. Press n to create one.")
                     .style(Style::new().fg(C_MUTED)),
@@ -466,9 +470,8 @@ fn resolve_model_name<'a>(app: &'a App, onde_app: &'a OndeApp) -> &'a str {
 
 fn render_publish_model(frame: &mut Frame, app: &App, area: Rect) {
     let model_name = app
-        .models
-        .get(app.models_cursor)
-        .and_then(|m| m.name.clone())
+        .publish_model_name
+        .clone()
         .unwrap_or_else(|| "model".to_string());
     let heading = format!("Assign {model_name} to app");
 
@@ -2661,7 +2664,10 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             }
             if uploaded {
                 keys.push(Span::styled("a", Style::new().fg(C_NEON)));
-                keys.push(Span::styled(" · assign to app    ", Style::new().fg(C_MUTED)));
+                keys.push(Span::styled(
+                    " · assign to app    ",
+                    Style::new().fg(C_MUTED),
+                ));
             }
             keys.push(Span::styled("c", Style::new().fg(C_NEON)));
             keys.push(Span::styled(" · chat    ", Style::new().fg(C_MUTED)));
