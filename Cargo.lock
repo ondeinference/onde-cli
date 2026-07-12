@@ -5144,13 +5144,15 @@ dependencies = [
 [[package]]
 name = "smbcloud-gresiq-sdk"
 version = "0.4.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37717cda8a547e6840d8230634f790a6e14e5e666981aea76874d69f1febbf95"
 dependencies = [
  "anyhow",
  "log",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "smbcloud-network 0.4.8",
+ "smbcloud-network 0.4.9",
  "thiserror 2.0.18",
  "tokio",
 ]
@@ -5175,7 +5177,9 @@ dependencies = [
 
 [[package]]
 name = "smbcloud-model"
-version = "0.4.8"
+version = "0.4.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8309cf17d429115d32165921c4f1fbbb0700e7d60f1bccd73f04f24e24cd837"
 dependencies = [
  "chrono",
  "log",
@@ -5206,14 +5210,16 @@ dependencies = [
 
 [[package]]
 name = "smbcloud-network"
-version = "0.4.8"
+version = "0.4.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9955a28b5ae5284ad0250d41f67b10ee1486c932ccdc152bfe9993345df7778e"
 dependencies = [
  "clap 4.6.1",
  "log",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "smbcloud-model 0.4.8",
+ "smbcloud-model 0.4.9",
  "wasm-bindgen",
 ]
 
