@@ -1408,7 +1408,13 @@ fn handle_key_model_detail(
                 app.upload_progress = None;
                 app.upload_running = false;
                 app.screen = Screen::GgufDetail;
-                app.status = Status::neutral("GGUF model details. u · upload to HuggingFace");
+                // Upload only applies to local fine-tune outputs; GGUFs that
+                // came from HF (App Group / HF cache) have nowhere to go.
+                app.status = if entry.is_uploadable() {
+                    Status::neutral("GGUF model details. Enter · upload to HuggingFace")
+                } else {
+                    Status::neutral("GGUF model details. c · test in chat")
+                };
             }
         }
         // Enter or 'm' — merge the selected LoRA adapter (skip fine-tuning)
@@ -1820,18 +1826,20 @@ fn trigger_publish_model(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
 /// on both sides by a non-alphanumeric character (or the string edge). "3B"
 /// is a plain substring of "13B"/"43B" (digit before) and of "3BETA"/"3B2"
 /// (alphanumeric after), so a naive `.contains()` would misdetect those.
+/// A preceding "." also disqualifies a match: "7B" inside "1.7B" is the tail
+/// of a decimal size, not a 7B model.
 fn contains_size_token(haystack: &str, size: &str) -> bool {
     let mut start = 0;
     while let Some(idx) = haystack[start..].find(size) {
         let abs_idx = start + idx;
         let end_idx = abs_idx + size.len();
-        let preceded_by_digit = haystack.as_bytes()[..abs_idx]
+        let preceded_by_digit_or_dot = haystack.as_bytes()[..abs_idx]
             .last()
-            .is_some_and(u8::is_ascii_digit);
+            .is_some_and(|b| b.is_ascii_digit() || *b == b'.');
         let followed_by_alnum = haystack.as_bytes()[end_idx..]
             .first()
             .is_some_and(u8::is_ascii_alphanumeric);
-        if !preceded_by_digit && !followed_by_alnum {
+        if !preceded_by_digit_or_dot && !followed_by_alnum {
             return true;
         }
         start = abs_idx + 1;
@@ -1872,7 +1880,14 @@ fn derive_base_model_meta(base_model_id: Option<&str>) -> (String, String, Strin
     }
     .to_string();
 
-    const SIZES: &[&str] = &["0.5B", "1.5B", "3B", "4B", "7B", "14B", "32B", "72B"];
+    // Covers the Qwen2.5 (0.5B–72B) and Qwen3 (0.6B–235B) lineups plus other
+    // common parameter counts. `contains_size_token` enforces token boundaries
+    // (no digit or "." before, no alphanumeric after), so no entry here can
+    // match inside another — ordering is not load-bearing.
+    const SIZES: &[&str] = &[
+        "0.5B", "0.6B", "1.5B", "1.7B", "1.8B", "2B", "3B", "4B", "7B", "8B", "9B", "13B", "14B",
+        "30B", "32B", "70B", "72B", "235B",
+    ];
     let haystack_upper = haystack.to_uppercase();
     let parameter_class = SIZES
         .iter()
@@ -3119,8 +3134,29 @@ mod tests {
 
     #[test]
     fn test_derive_base_model_meta_larger_size_not_shadowed_by_shorter_substring() {
-        // "13B" contains the substring "3B" -- this must not resolve to "3B".
+        // "13B" contains the substring "3B" -- this must resolve to "13B",
+        // not "3B".
         let (_, _, parameter_class) = derive_base_model_meta(Some("someone/Mystery-13B-GGUF"));
+        assert_eq!(parameter_class, "13B");
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_qwen3_small_sizes() {
+        let (_, family, parameter_class) = derive_base_model_meta(Some("Qwen/Qwen3-0.6B"));
+        assert_eq!(family, "qwen3");
+        assert_eq!(parameter_class, "0.6B");
+        let (_, _, parameter_class) = derive_base_model_meta(Some("Qwen/Qwen3-8B"));
+        assert_eq!(parameter_class, "8B");
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_decimal_size_not_matched_as_integer_tail() {
+        // "1.7B" contains the substring "7B" -- this must resolve to "1.7B",
+        // not "7B".
+        let (_, _, parameter_class) = derive_base_model_meta(Some("Qwen/Qwen3-1.7B"));
+        assert_eq!(parameter_class, "1.7B");
+        // "2.7B" isn't a known size; its "7B" tail must not match either.
+        let (_, _, parameter_class) = derive_base_model_meta(Some("someone/Mystery-2.7B-GGUF"));
         assert_eq!(parameter_class, "unknown");
     }
 
