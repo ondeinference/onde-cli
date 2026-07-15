@@ -89,6 +89,7 @@ fn render_card(frame: &mut Frame, app: &App, area: Rect) {
         Screen::FineTune => render_finetune(frame, app, inner),
         Screen::CloneRepo => render_clone_repo(frame, app, inner),
         Screen::Chat => render_chat(frame, app, inner),
+        Screen::PublishModel => render_publish_model(frame, app, inner),
     }
 }
 
@@ -366,7 +367,7 @@ fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(rest);
 
-        render_apps_list(frame, app, bottom[0]);
+        render_apps_list(frame, app, bottom[0], "No apps yet. Press n to create one.");
 
         frame.render_widget(
             Paragraph::new("New app name:").style(Style::new().fg(C_MUTED)),
@@ -384,7 +385,7 @@ fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
         ])
         .split(rest);
 
-        render_apps_list(frame, app, bottom[0]);
+        render_apps_list(frame, app, bottom[0], "No apps yet. Press n to create one.");
         frame.render_widget(
             Paragraph::new("n · new   Enter · open   s · sign out").style(Style::new().fg(C_MUTED)),
             bottom[1],
@@ -392,17 +393,20 @@ fn render_apps(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_apps_list(frame: &mut Frame, app: &App, area: Rect) {
+fn render_apps_list(frame: &mut Frame, app: &App, area: Rect, empty_hint: &str) {
     if app.apps.is_empty() {
-        if app.busy {
+        // Keyed on apps_loaded rather than busy: busy can flip back to
+        // false from an unrelated concurrent event (e.g. a model
+        // registration finishing before the apps fetch does) while the
+        // apps list is still genuinely in flight.
+        if !app.apps_loaded {
             frame.render_widget(
                 Paragraph::new("  Loading…").style(Style::new().fg(C_MUTED)),
                 area,
             );
-        } else if app.apps_loaded {
+        } else {
             frame.render_widget(
-                Paragraph::new("  No apps yet. Press n to create one.")
-                    .style(Style::new().fg(C_MUTED)),
+                Paragraph::new(format!("  {empty_hint}")).style(Style::new().fg(C_MUTED)),
                 area,
             );
         }
@@ -459,6 +463,51 @@ fn resolve_model_name<'a>(app: &'a App, onde_app: &'a OndeApp) -> &'a str {
         return name;
     }
     "No model assigned yet"
+}
+
+// publish (assign a just-registered model) screen
+
+fn render_publish_model(frame: &mut Frame, app: &App, area: Rect) {
+    let model_name = app
+        .publish_model_name
+        .clone()
+        .unwrap_or_else(|| "model".to_string());
+    let heading = format!("Assign {model_name} to app");
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // heading
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // column header
+        Constraint::Length(1), // divider
+        Constraint::Min(0),    // apps list
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // status
+    ])
+    .split(area);
+
+    frame.render_widget(
+        Paragraph::new(heading).style(Style::new().fg(C_INK).bold()),
+        rows[0],
+    );
+
+    frame.render_widget(
+        Paragraph::new("  Name                   Status   Model").style(Style::new().fg(C_MUTED)),
+        rows[2],
+    );
+
+    let divider = "─".repeat(area.width as usize);
+    frame.render_widget(
+        Paragraph::new(divider).style(Style::new().fg(C_LINE)),
+        rows[3],
+    );
+
+    render_apps_list(
+        frame,
+        app,
+        rows[4],
+        "No apps yet. Create one from the Apps screen, then come back to assign this model.",
+    );
+    render_status(frame, app, rows[6]);
 }
 
 // app detail screen
@@ -1428,7 +1477,7 @@ fn render_gguf_detail(frame: &mut Frame, app: &App, area: Rect) {
         app.upload_progress,
         Some(crate::hf_upload::UploadProgress::Done { .. })
     ) {
-        "Esc · back"
+        "a · assign to app    Esc · back"
     } else if uploadable {
         "Enter · upload    c · chat    Esc · back"
     } else {
@@ -2608,10 +2657,21 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
                 .as_ref()
                 .map(|g| g.is_uploadable())
                 .unwrap_or(false);
+            let uploaded = matches!(
+                app.upload_progress,
+                Some(crate::hf_upload::UploadProgress::Done { .. })
+            );
             let mut keys = Vec::new();
-            if uploadable {
+            if uploadable && !uploaded {
                 keys.push(Span::styled("Enter", Style::new().fg(C_NEON)));
                 keys.push(Span::styled(" · upload    ", Style::new().fg(C_MUTED)));
+            }
+            if uploaded {
+                keys.push(Span::styled("a", Style::new().fg(C_NEON)));
+                keys.push(Span::styled(
+                    " · assign to app    ",
+                    Style::new().fg(C_MUTED),
+                ));
             }
             keys.push(Span::styled("c", Style::new().fg(C_NEON)));
             keys.push(Span::styled(" · chat    ", Style::new().fg(C_MUTED)));
@@ -2661,6 +2721,16 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled(" · check repo    ", Style::new().fg(C_MUTED)),
             Span::styled("Esc", Style::new().fg(C_NEON)),
             Span::styled(" · back    ", Style::new().fg(C_MUTED)),
+            Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
+            Span::styled(" · quit", Style::new().fg(C_MUTED)),
+        ],
+        Screen::PublishModel => vec![
+            Span::styled("↑↓", Style::new().fg(C_NEON)),
+            Span::styled(" · navigate    ", Style::new().fg(C_MUTED)),
+            Span::styled("Enter", Style::new().fg(C_NEON)),
+            Span::styled(" · assign    ", Style::new().fg(C_MUTED)),
+            Span::styled("Esc", Style::new().fg(C_NEON)),
+            Span::styled(" · skip    ", Style::new().fg(C_MUTED)),
             Span::styled("Ctrl+C", Style::new().fg(C_NEON)),
             Span::styled(" · quit", Style::new().fg(C_MUTED)),
         ],

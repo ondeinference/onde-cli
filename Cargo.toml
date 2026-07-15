@@ -32,7 +32,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 smbcloud-auth-sdk = "0.3.34"
 smbcloud-model = "0.3.35"
 smbcloud-network = "0.3.35"
-smbcloud-gresiq-sdk = "0.3.35"
+smbcloud-gresiq-sdk = "0.4.9"
 candle-core = "0.10.2"
 candle-nn = "0.10.2"
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }

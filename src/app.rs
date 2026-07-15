@@ -47,6 +47,8 @@ pub enum Screen {
     GgufDetail,
     CloneRepo,
     Chat,
+    /// Pick which app to assign a just-registered fine-tuned model to.
+    PublishModel,
 }
 
 /// An entry in the Onde inference model picker.
@@ -247,6 +249,9 @@ pub enum AuthEvent {
         model_id: String,
     },
     ModelAssignFailed(String),
+    // publish: register a freshly HF-uploaded fine-tune into the catalog
+    ModelRegistered(OndeModel),
+    ModelRegisterFailed(String),
     // downloads (catalog merged with local HF cache)
     DownloadsLoaded(Vec<crate::hf::MergedModel>),
     #[allow(dead_code)] // reserved for future explicit error reporting
@@ -302,6 +307,11 @@ pub struct App {
     pub rename_input: String,
     // which app we're picking a model for
     pub assigning_for_app_index: Option<usize>,
+    // the model just registered from GgufDetail, pending assignment on the
+    // PublishModel screen. Held by id/name directly (not a models_cursor
+    // index) so a later models reload can never shift it onto a different row.
+    pub publish_model_id: Option<String>,
+    pub publish_model_name: Option<String>,
     // local HF cache downloads merged with remote catalog
     pub downloads: Vec<crate::hf::MergedModel>,
     pub downloads_cursor: usize,
@@ -392,6 +402,8 @@ impl App {
             renaming_app: false,
             rename_input: String::new(),
             assigning_for_app_index: None,
+            publish_model_id: None,
+            publish_model_name: None,
             downloads: Vec::new(),
             downloads_cursor: 0,
             downloads_offset: 0,
@@ -596,6 +608,31 @@ impl App {
             AuthEvent::ModelAssignFailed(msg) => {
                 self.busy = false;
                 self.status = Status::error(msg);
+            }
+            // publish
+            AuthEvent::ModelRegistered(model) => {
+                self.busy = false;
+                let model_name = model
+                    .name
+                    .clone()
+                    .or_else(|| model.hf_repo_id.clone())
+                    .unwrap_or_else(|| "Model".to_string());
+                // Held by id/name directly rather than a models_cursor index,
+                // so this can't drift onto a different row if app.models is
+                // ever reloaded/reordered while this screen is open.
+                self.publish_model_id = Some(model.id.clone());
+                self.publish_model_name = Some(model_name.clone());
+                self.models.push(model);
+                self.screen = Screen::PublishModel;
+                self.apps_cursor = 0;
+                self.apps_offset = 0;
+                self.status = Status::success(format!(
+                    "{model_name} registered. Pick an app to assign it to."
+                ));
+            }
+            AuthEvent::ModelRegisterFailed(msg) => {
+                self.busy = false;
+                self.status = Status::error(format!("Registration failed: {msg}"));
             }
             // downloads
             AuthEvent::DownloadsLoaded(models) => {
@@ -927,6 +964,7 @@ fn handle_key(
         Screen::FineTune => handle_key_finetune(app, key, tx),
         Screen::CloneRepo => handle_key_clone_repo(app, key, tx),
         Screen::Chat => handle_key_chat(app, key, tx),
+        Screen::PublishModel => handle_key_publish_model(app, key, tx),
     }
 }
 
@@ -1370,7 +1408,13 @@ fn handle_key_model_detail(
                 app.upload_progress = None;
                 app.upload_running = false;
                 app.screen = Screen::GgufDetail;
-                app.status = Status::neutral("GGUF model details. u · upload to HuggingFace");
+                // Upload only applies to local fine-tune outputs; GGUFs that
+                // came from HF (App Group / HF cache) have nowhere to go.
+                app.status = if entry.is_uploadable() {
+                    Status::neutral("GGUF model details. Enter · upload to HuggingFace")
+                } else {
+                    Status::neutral("GGUF model details. c · test in chat")
+                };
             }
         }
         // Enter or 'm' — merge the selected LoRA adapter (skip fine-tuning)
@@ -1629,6 +1673,9 @@ fn handle_key_gguf_detail(
                 app.upload_progress = None;
                 app.status = Status::success(format!("Uploaded: {url_owned}"));
             }
+            (Char('a'), KeyModifiers::NONE) => {
+                trigger_publish_model(app, tx);
+            }
             (Char('c'), KeyModifiers::CONTROL) => {
                 app.should_quit = true;
             }
@@ -1716,6 +1763,214 @@ fn handle_key_gguf_detail(
         }
         _ => {}
     }
+}
+
+/// Registers the just-uploaded GGUF into the GresIQ catalog, private to this
+/// account, then moves to the app picker so it can be assigned right away.
+fn trigger_publish_model(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    if app.busy {
+        return;
+    }
+    let Some(ref gguf) = app.selected_gguf else {
+        return;
+    };
+    let hf_repo_id = app.upload_repo_name.clone();
+    if hf_repo_id.is_empty() {
+        app.status = Status::error("No uploaded repo to register.");
+        return;
+    }
+    let gguf_file = gguf.file_name.clone();
+    let approx_size_bytes = std::fs::metadata(&gguf.path).ok().map(|m| m.len() as i64);
+    let base_model_id = app
+        .current_project
+        .as_ref()
+        .map(|p| p.base_model_id.clone());
+    let (base_name, family, parameter_class) = derive_base_model_meta(base_model_id.as_deref());
+    let display_name = format!("{base_name} (Fine-tuned)");
+    let token = token::load().unwrap_or_default();
+
+    // Make sure the apps list is ready by the time the picker shows up. This
+    // must run before `app.busy` is set below -- trigger_load_apps early-
+    // returns if busy is already true, so reordering these two would make
+    // the apps fetch silently no-op.
+    if !app.apps_loaded {
+        trigger_load_apps(app, tx.clone());
+    }
+
+    app.busy = true;
+    app.status = Status::neutral("Registering model…");
+
+    tokio::spawn(async move {
+        match crate::gresiq::create_model(
+            &token,
+            &hf_repo_id,
+            &display_name,
+            &family,
+            &parameter_class,
+            Some(&gguf_file),
+            approx_size_bytes,
+        )
+        .await
+        {
+            Ok(model) => {
+                let _ = tx.send(AuthEvent::ModelRegistered(model));
+            }
+            Err(e) => {
+                let _ = tx.send(AuthEvent::ModelRegisterFailed(e.to_string()));
+            }
+        }
+    });
+}
+
+/// True if `size` (e.g. "3B") appears in `haystack` as its own token, bounded
+/// on both sides by a non-alphanumeric character (or the string edge). "3B"
+/// is a plain substring of "13B"/"43B" (digit before) and of "3BETA"/"3B2"
+/// (alphanumeric after), so a naive `.contains()` would misdetect those.
+/// A preceding "." also disqualifies a match: "7B" inside "1.7B" is the tail
+/// of a decimal size, not a 7B model.
+fn contains_size_token(haystack: &str, size: &str) -> bool {
+    let mut start = 0;
+    while let Some(idx) = haystack[start..].find(size) {
+        let abs_idx = start + idx;
+        let end_idx = abs_idx + size.len();
+        let preceded_by_digit_or_dot = haystack.as_bytes()[..abs_idx]
+            .last()
+            .is_some_and(|b| b.is_ascii_digit() || *b == b'.');
+        let followed_by_alnum = haystack.as_bytes()[end_idx..]
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric);
+        if !preceded_by_digit_or_dot && !followed_by_alnum {
+            return true;
+        }
+        start = abs_idx + 1;
+    }
+    false
+}
+
+/// Best-effort display name / family / parameter class for a fine-tune,
+/// derived from the base model it was trained from. Falls back to generic
+/// values when the base model isn't one of the officially supported ones.
+fn derive_base_model_meta(base_model_id: Option<&str>) -> (String, String, String) {
+    let base_model_id = base_model_id.unwrap_or("");
+    let info = onde::inference::models::SUPPORTED_MODEL_INFO
+        .iter()
+        .find(|i| i.id == base_model_id);
+
+    let base_name = info.map(|i| i.name.to_string()).unwrap_or_else(|| {
+        base_model_id
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Custom model")
+            .to_string()
+    });
+
+    let haystack = format!("{base_model_id} {base_name}").to_lowercase();
+    // Checked in this order (most-specific first) because "qwen2.5-coder"
+    // also contains the substring "qwen2.5" — reordering these would make
+    // coder models misclassified as plain qwen2.5.
+    let family = if haystack.contains("qwen3") {
+        "qwen3"
+    } else if haystack.contains("qwen2.5-coder") || haystack.contains("qwen2_5-coder") {
+        "qwen2.5-coder"
+    } else if haystack.contains("qwen2.5") || haystack.contains("qwen2_5") {
+        "qwen2.5"
+    } else {
+        "custom"
+    }
+    .to_string();
+
+    // Covers the Qwen2.5 (0.5B–72B) and Qwen3 (0.6B–235B) lineups plus other
+    // common parameter counts. `contains_size_token` enforces token boundaries
+    // (no digit or "." before, no alphanumeric after), so no entry here can
+    // match inside another — ordering is not load-bearing.
+    const SIZES: &[&str] = &[
+        "0.5B", "0.6B", "1.5B", "1.7B", "1.8B", "2B", "3B", "4B", "7B", "8B", "9B", "13B", "14B",
+        "30B", "32B", "70B", "72B", "235B",
+    ];
+    let haystack_upper = haystack.to_uppercase();
+    let parameter_class = SIZES
+        .iter()
+        .find(|s| contains_size_token(&haystack_upper, s))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    (base_name, family, parameter_class)
+}
+
+fn handle_key_publish_model(
+    app: &mut App,
+    key: crossterm::event::KeyEvent,
+    tx: mpsc::UnboundedSender<AuthEvent>,
+) {
+    use KeyCode::*;
+
+    match (key.code, key.modifiers) {
+        (Up, _) | (Char('k'), KeyModifiers::NONE) => {
+            app.apps_cursor = app.apps_cursor.saturating_sub(1);
+            clamp_apps_scroll(app, MAX_VISIBLE);
+        }
+        (Down, _) | (Char('j'), KeyModifiers::NONE) => {
+            if app.apps_cursor + 1 < app.apps.len() {
+                app.apps_cursor += 1;
+            }
+            clamp_apps_scroll(app, MAX_VISIBLE);
+        }
+        (Enter, _) if !app.apps.is_empty() => {
+            submit_assign_published_model(app, tx);
+        }
+        (Esc, _) => {
+            app.publish_model_id = None;
+            app.publish_model_name = None;
+            app.screen = Screen::GgufDetail;
+            app.status = Status::neutral("Model registered — assign it later from Apps.");
+        }
+        (Char('c'), KeyModifiers::CONTROL) => {
+            app.should_quit = true;
+        }
+        _ => {}
+    }
+}
+
+/// Assigns the model held in `app.publish_model_id` to the app currently
+/// selected in the picker. Reads the target model by id, not by indexing
+/// into `app.models` with a cursor, so it can't silently assign the wrong
+/// row if the models list is ever reloaded or reordered while this screen
+/// is open.
+fn submit_assign_published_model(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
+    if app.busy {
+        return;
+    }
+    let Some(model_id) = app.publish_model_id.clone() else {
+        return;
+    };
+    let Some(onde_app) = app.apps.get(app.apps_cursor) else {
+        return;
+    };
+    let token = token::load().unwrap_or_default();
+    let onde_app_id = onde_app.id.clone();
+    let app_index = app.apps_cursor;
+    let model_name = app
+        .publish_model_name
+        .clone()
+        .unwrap_or_else(|| model_id.clone());
+    app.busy = true;
+    app.publish_model_id = None;
+    app.publish_model_name = None;
+    app.status = Status::neutral(format!("Assigning {model_name}…"));
+    tokio::spawn(async move {
+        match crate::gresiq::assign_model(&token, &onde_app_id, &model_id).await {
+            Ok(()) => {
+                let _ = tx.send(AuthEvent::ModelAssigned {
+                    app_index,
+                    model_id,
+                });
+            }
+            Err(e) => {
+                let _ = tx.send(AuthEvent::ModelAssignFailed(e.to_string()));
+            }
+        }
+    });
 }
 
 fn format_adapter_size(bytes: u64) -> String {
@@ -2838,4 +3093,80 @@ fn trigger_inference_download(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_base_model_meta_known_qwen3() {
+        let (name, family, parameter_class) =
+            derive_base_model_meta(Some("bartowski/Qwen_Qwen3-4B-GGUF"));
+        assert_eq!(family, "qwen3");
+        assert_eq!(parameter_class, "4B");
+        assert!(!name.is_empty());
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_known_qwen25_coder() {
+        let (_, family, parameter_class) =
+            derive_base_model_meta(Some("bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF"));
+        assert_eq!(family, "qwen2.5-coder");
+        assert_eq!(parameter_class, "1.5B");
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_unknown_falls_back() {
+        let (name, family, parameter_class) = derive_base_model_meta(Some("someone/mystery-model"));
+        assert_eq!(family, "custom");
+        assert_eq!(parameter_class, "unknown");
+        assert_eq!(name, "mystery-model");
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_none() {
+        let (name, family, parameter_class) = derive_base_model_meta(None);
+        assert_eq!(family, "custom");
+        assert_eq!(parameter_class, "unknown");
+        assert_eq!(name, "Custom model");
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_larger_size_not_shadowed_by_shorter_substring() {
+        // "13B" contains the substring "3B" -- this must resolve to "13B",
+        // not "3B".
+        let (_, _, parameter_class) = derive_base_model_meta(Some("someone/Mystery-13B-GGUF"));
+        assert_eq!(parameter_class, "13B");
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_qwen3_small_sizes() {
+        let (_, family, parameter_class) = derive_base_model_meta(Some("Qwen/Qwen3-0.6B"));
+        assert_eq!(family, "qwen3");
+        assert_eq!(parameter_class, "0.6B");
+        let (_, _, parameter_class) = derive_base_model_meta(Some("Qwen/Qwen3-8B"));
+        assert_eq!(parameter_class, "8B");
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_decimal_size_not_matched_as_integer_tail() {
+        // "1.7B" contains the substring "7B" -- this must resolve to "1.7B",
+        // not "7B".
+        let (_, _, parameter_class) = derive_base_model_meta(Some("Qwen/Qwen3-1.7B"));
+        assert_eq!(parameter_class, "1.7B");
+        // "2.7B" isn't a known size; its "7B" tail must not match either.
+        let (_, _, parameter_class) = derive_base_model_meta(Some("someone/Mystery-2.7B-GGUF"));
+        assert_eq!(parameter_class, "unknown");
+    }
+
+    #[test]
+    fn test_derive_base_model_meta_size_not_matched_mid_word() {
+        // "3B" is a substring of both "3BETA" (trailing letter) and "3B2"
+        // (trailing digit) -- neither should resolve to "3B".
+        let (_, _, beta) = derive_base_model_meta(Some("someone/Mystery-3BETA-GGUF"));
+        assert_eq!(beta, "unknown");
+        let (_, _, versioned) = derive_base_model_meta(Some("someone/Mystery-3B2-GGUF"));
+        assert_eq!(versioned, "unknown");
+    }
 }
