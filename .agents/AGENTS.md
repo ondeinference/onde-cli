@@ -7,6 +7,7 @@
 ```sh
 cargo build                  # debug build
 cargo run                    # launch the TUI
+cargo run -- --mcp           # run as an MCP server over stdio (no TUI)
 cargo test --locked          # unit tests (heavy ones are #[ignore])
 cargo clippy --all-targets -- -D warnings
 cargo fmt -- --check

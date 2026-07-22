@@ -28,7 +28,9 @@ log = "0.4"
 ratatui = "0.29"
 libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time"] }
+rmcp = { version = "2.2.0", features = ["server", "macros", "transport-io", "schemars"] }
+schemars = "1"
 smbcloud-auth-sdk = "0.3.34"
 smbcloud-model = "0.3.35"
 smbcloud-network = "0.3.35"

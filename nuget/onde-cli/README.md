@@ -1,5 +1,7 @@
 # Onde CLI for .NET
 
+<!-- mcp-name: io.github.ondeinference/onde-cli -->
+
 `onde` is the official command-line interface for [Onde Inference](https://ondeinference.com).
 
 ## Install
