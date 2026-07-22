@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::io::AsyncWriteExt;
 
@@ -15,7 +15,7 @@ use tokio::io::AsyncWriteExt;
 // ---------------------------------------------------------------------------
 
 /// Compact model info returned by the HF search API.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HfModelInfo {
     #[serde(rename = "id")]
     pub model_id: String,
@@ -32,7 +32,7 @@ pub struct HfModelInfo {
 }
 
 /// A file entry in a HuggingFace model repository.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HfSibling {
     pub rfilename: String,
 }
