@@ -1,6 +1,6 @@
 # onde_cli
 
-Dart wrapper for the official [Onde Inference](https://ondeinference.com) CLI.
+Dart launcher for the official [Onde Inference](https://ondeinference.com) CLI.
 
 ## Install
 
@@ -14,13 +14,13 @@ dart pub global activate onde_cli
 onde
 ```
 
-That opens the Onde terminal UI for account management, app setup, and local model fine-tuning. For package details, platform notes, and the full install matrix, see <https://ondeinference.com/cli>.
+That opens the Onde terminal UI for account management, app setup, and local model fine-tuning. On first run, the launcher downloads the right native binary into `~/.onde/cli`. After that it reuses the local copy. For package details, platform notes, and the full install matrix, see <https://ondeinference.com/cli>.
 
 If you want a quick background read on the inference side, Onde has a short note on the [forward pass](https://ondeinference.com/forward-pass).
 
 ## Platform support
 
-This package bundles native `onde` binaries for:
+This package downloads native `onde` binaries for:
 
 - macOS `arm64`, `x64`
 - Linux `arm64`, `x64` (glibc)
@@ -32,6 +32,16 @@ This package bundles native `onde` binaries for:
 - pip: `pip install onde-cli`
 - .NET tool: `dotnet tool install --global Onde.Cli`
 - Homebrew: `brew install ondeinference/homebrew-tap/onde`
+
+## Cache location
+
+The launcher stores downloaded binaries under:
+
+```sh
+~/.onde/cli
+```
+
+Versioned downloads live under that directory, so different CLI versions can coexist without stepping on each other.
 
 ## Source
 
@@ -45,4 +55,4 @@ Dual-licensed under MIT and Apache 2.0.
 
 ## Copyright
 
-© 2026 [Onde Inference](https://ondeinference.com) (Splitfire AB).
+© 2026 [Splitfire AB](https://5mb.app) ([Onde Inference](https://ondeinference.com)).

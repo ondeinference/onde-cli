@@ -7,6 +7,7 @@ mod hf;
 mod hf_clone;
 mod hf_search;
 mod hf_upload;
+mod mcp;
 mod merge;
 mod project;
 mod token;
@@ -73,6 +74,13 @@ fn redirect_output() -> Option<std::fs::File> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // MCP mode runs a JSON-RPC server over stdio instead of the TUI. stdout is
+    // the JSON-RPC channel, so — unlike the TUI path below — we must NOT redirect
+    // stdout/stderr, and we return before touching the terminal at all.
+    if std::env::args().skip(1).any(|arg| arg == "--mcp") {
+        return mcp::serve().await;
+    }
+
     let tty = redirect_output();
 
     // Build a writer that targets the real terminal.  When

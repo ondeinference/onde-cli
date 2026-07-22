@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/ondeinference/onde/main/assets/onde-inference-logo.svg" alt="Onde Inference" width="96">
+  <img src="https://raw.githubusercontent.com/ondeinference/onde/refs/heads/development/assets/onde-inference-logo.svg" alt="Onde Inference" width="96">
 </p>
 
 <h1 align="center">Onde Inference CLI</h1>
@@ -39,7 +39,7 @@ npm install -g @ondeinference/cli
 ### Homebrew
 
 ```sh
-brew tap ondeinference/homebrew-tap
+brew tap ondeinference/homebrew-tap && brew trust --tap ondeinference/homebrew-tap
 brew install onde
 ```
 
@@ -65,6 +65,8 @@ dotnet tool install --global Onde.Cli
 ```sh
 dart pub global activate onde_cli
 ```
+
+The Dart package is a thin launcher. On first run it downloads the right native binary into `~/.onde/cli`, then reuses the local copy.
 
 ### Pre-built binary
 
@@ -102,6 +104,16 @@ This opens the TUI. You can sign up or sign in right there.
 | `Ctrl+L` | Go to the sign-in screen |
 | `Ctrl+N` | Go to the new account screen |
 | `Ctrl+C` | Quit |
+
+### MCP server
+
+Run `onde` as a [Model Context Protocol](https://modelcontextprotocol.io/) server over stdio instead of the TUI:
+
+```sh
+onde --mcp
+```
+
+This exposes Onde account and model-catalog operations as MCP tools — `login`, `me`, `apps_list`, `app_create`, `app_rename`, `models_list`, `model_register`, `model_assign`, `hf_search` — returning structured JSON. stdout is the JSON-RPC channel; tools run non-interactively and reuse the token from a TUI sign-in (or the `login` tool). Point any MCP client at the command `onde --mcp`.
 
 ---
 
@@ -171,6 +183,8 @@ You can search for any of these from the Models tab with `/`.
 
 Logs are written to `~/.cache/onde/debug.log`.
 
+If you installed through pub.dev, the launcher cache lives under `~/.onde/cli`.
+
 ---
 
 ## License
@@ -179,4 +193,4 @@ Dual-licensed under [MIT](https://github.com/ondeinference/onde-cli/blob/main/LI
 
 ## Copyright
 
-© 2026 [Onde Inference](https://ondeinference.com) (Splitfire AB).
+© 2026 [Splitfire AB](https://5mb.app) ([Onde Inference](https://ondeinference.com)).

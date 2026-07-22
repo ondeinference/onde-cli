@@ -1,16 +1,16 @@
 [package]
 name = "onde-cli"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
-description = "Terminal UI for signing up, signing in, and managing your Onde Inference account."
+description = "Terminal UI to fine-tune model and manage your Onde Inference account."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ondeinference/onde-cli"
-homepage = "https://ondeinference.com"
+homepage = "https://ondeinference.com/cli"
 documentation = "https://docs.rs/onde-cli"
 readme = "README.md"
 keywords = ["onde", "cli", "tui", "auth", "inference"]
 categories = ["command-line-utilities"]
-authors = ["Seto Elkahfi <hej@setoelkahfi.se>"]
+authors = ["Seto Elkahfi <seto@ondeinference.com>"]
 
 [[bin]]
 name = "onde"
@@ -28,11 +28,13 @@ log = "0.4"
 ratatui = "0.29"
 libc = "0.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "time"] }
+rmcp = { version = "2.2.0", features = ["server", "macros", "transport-io", "schemars"] }
+schemars = "1"
 smbcloud-auth-sdk = "0.3.34"
 smbcloud-model = "0.3.35"
 smbcloud-network = "0.3.35"
-smbcloud-gresiq-sdk = "0.3.35"
+smbcloud-gresiq-sdk = "0.4.9"
 candle-core = "0.10.2"
 candle-nn = "0.10.2"
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
@@ -41,7 +43,7 @@ serde_json = "1"
 half = "2"
 sha2 = "0.10"
 # onde = { path = "../onde" }
-onde = "1.0.0"
+onde = "1.1.4"
 
 # Metal and Accelerate are macOS-only frameworks; Cargo merges features so on
 # macOS these are added on top of the base candle-core dep above.
