@@ -15,20 +15,46 @@ user-invocable: true
 
 - Do not fast-forward merge feature branches, release branches, or hotfix branches.
 - Prefer explicit merge commits so the branch history stays visible.
-- If release prep happens on a branch, merge it into `main` with `--no-ff` before tagging.
+- Release prep goes through `development` on its way to `main`, with `--no-ff` at every hop.
 - Tag the merge commit that contains the final release state.
+
+## Branch flow
+
+Feature branches merge into `development`. Releases go:
+
+```
+release/vX.Y.Z -> development -> main
+```
+
+Never merge a release branch straight into `main` — `development` has to carry the
+release state too, or the next feature branch starts from a base that is missing it.
 
 ## Release guidance
 
-For releases, prefer a flow like this:
-
 ```bash
+# 1. cut the release branch from development, commit the version bumps
+git checkout development
+git checkout -b release/vX.Y.Z
+git commit -am "Prepare vX.Y.Z"
+
+# 2. release branch -> development
+git checkout development
+git merge --no-ff release/vX.Y.Z -m "Merge release prep for vX.Y.Z"
+
+# 3. development -> main
 git checkout main
-git merge --no-ff <release-branch> -m "Merge release prep for vX.Y.Z"
+git merge --no-ff development -m "Merge development for vX.Y.Z"
+
+# 4. tag the main merge commit, then push
 git tag vX.Y.Z
+git push origin development
 git push origin main
 git push origin vX.Y.Z
 ```
+
+The tag belongs on the step-3 merge commit on `main`, not on the release branch and not
+on `development`. Pushing the tag is what triggers the wrapper publish workflows, which
+read the version from the tag.
 
 If the work is already on `main`, make a normal commit and tag that commit. Do not rewrite history just to avoid a merge commit.
 
@@ -37,6 +63,7 @@ If the work is already on `main`, make a normal commit and tag that commit. Do n
 - `git merge --ff`
 - `git pull --ff-only` as a default recommendation for this repo's merge policy
 - Tagging a branch tip that has not been merged into `main` when the intended release source of truth is `main`
+- Merging a release branch directly into `main`, skipping `development`
 
 ## Why
 

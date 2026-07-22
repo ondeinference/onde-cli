@@ -1,6 +1,6 @@
 [package]
 name = "onde-cli"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 description = "Terminal UI to fine-tune model and manage your Onde Inference account."
 license = "MIT OR Apache-2.0"
