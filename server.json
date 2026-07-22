@@ -1,0 +1,70 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ondeinference/onde-cli",
+  "title": "Onde Inference CLI",
+  "description": "Manage your Onde Inference account and models: apps, model catalog, fine-tuned GGUF deploys.",
+  "version": "0.4.1",
+  "websiteUrl": "https://ondeinference.com/cli",
+  "repository": {
+    "url": "https://github.com/ondeinference/onde-cli",
+    "source": "github",
+    "id": "1207617309"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "@ondeinference/cli",
+      "version": "0.4.1",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "named",
+          "name": "--mcp",
+          "description": "Run the CLI as an MCP server over stdio instead of launching the TUI.",
+          "isRequired": true
+        }
+      ]
+    },
+    {
+      "registryType": "nuget",
+      "registryBaseUrl": "https://api.nuget.org/v3/index.json",
+      "identifier": "Onde.Cli",
+      "version": "0.4.1",
+      "runtimeHint": "dnx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "named",
+          "name": "--mcp",
+          "description": "Run the CLI as an MCP server over stdio instead of launching the TUI.",
+          "isRequired": true
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "categories": ["developer-tools", "ai"],
+      "keywords": [
+        "onde",
+        "inference",
+        "llm",
+        "fine-tuning",
+        "lora",
+        "gguf",
+        "hugging face",
+        "model deployment",
+        "on-device"
+      ],
+      "products": {
+        "Onde Inference": "https://ondeinference.com"
+      }
+    }
+  }
+}

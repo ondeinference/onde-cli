@@ -1,0 +1,128 @@
+name: MCP Registry Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.4.1)"
+        required: true
+
+# OIDC is how we authenticate to the MCP Registry: the registry trusts a GitHub
+# Actions token issued for this repository, so no long-lived secret is needed.
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  publish:
+    name: Publish server.json to the MCP Registry
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set the release version
+        shell: bash
+        run: |
+          release_version="${{ github.event.inputs.tag }}"
+          release_version="${release_version#v}"
+
+          echo "RELEASE_VERSION=${release_version}" >> "$GITHUB_ENV"
+
+      - name: Check the server name is consistent across packages
+        shell: bash
+        run: |
+          server_name="$(jq -r '.name' server.json)"
+          echo "Server name: ${server_name}"
+
+          # npm proves ownership through `mcpName` in the published package.json,
+          # rendered at release time from this template.
+          grep -q "\"mcpName\": \"${server_name}\"" npm/package-main.json.tmpl
+
+          # NuGet proves ownership through an `mcp-name:` marker in the package README.
+          grep -q "mcp-name: ${server_name}" nuget/onde-cli/README.md
+
+      - name: Set the version in server.json
+        shell: bash
+        run: |
+          jq --arg v "${RELEASE_VERSION}" \
+            '.version = $v | .packages |= map(.version = $v)' \
+            server.json > server.tmp
+          mv server.tmp server.json
+          cat server.json
+
+      - name: Verify the published packages carry the ownership marker
+        shell: bash
+        run: |
+          # The registry stores metadata only, and validates it by fetching each
+          # listed package and looking for a marker naming this server. Checking
+          # the sources isn't enough: a package published before the marker
+          # landed will still be missing it. Both comparisons are case-sensitive.
+          server_name="$(jq -r '.name' server.json)"
+
+          # npm is queryable within seconds of publishing, but the npm release
+          # workflow may still be building its platform packages when this runs.
+          for attempt in $(seq 1 20); do
+            if npm view "@ondeinference/cli@${RELEASE_VERSION}" version; then
+              break
+            fi
+            if [ "${attempt}" -eq 20 ]; then
+              echo "@ondeinference/cli@${RELEASE_VERSION} is still not on npm after 10 minutes." >&2
+              exit 1
+            fi
+            echo "Waiting for @ondeinference/cli@${RELEASE_VERSION} on npm (attempt ${attempt}/20)..."
+            sleep 30
+          done
+
+          npm_mcp_name="$(npm view "@ondeinference/cli@${RELEASE_VERSION}" mcpName)"
+          if [ "${npm_mcp_name}" != "${server_name}" ]; then
+            echo "@ondeinference/cli@${RELEASE_VERSION} declares mcpName '${npm_mcp_name}', expected '${server_name}'." >&2
+            echo "npm versions are immutable — cut a new release with the marker in place." >&2
+            exit 1
+          fi
+
+          # nuget.org validates a package before it reaches the flat container,
+          # so a version pushed minutes ago is not queryable yet. Poll instead
+          # of failing the release on that race.
+          for attempt in $(seq 1 20); do
+            nuget_versions="$(curl -fsSL "https://api.nuget.org/v3-flatcontainer/onde.cli/index.json")"
+            if echo "${nuget_versions}" | jq -e --arg v "${RELEASE_VERSION}" '.versions | index($v)' >/dev/null; then
+              echo "Onde.Cli ${RELEASE_VERSION} is indexed."
+              break
+            fi
+            if [ "${attempt}" -eq 20 ]; then
+              echo "Onde.Cli ${RELEASE_VERSION} is still not indexed on nuget.org after 10 minutes." >&2
+              exit 1
+            fi
+            echo "Waiting for nuget.org to index ${RELEASE_VERSION} (attempt ${attempt}/20)..."
+            sleep 30
+          done
+
+          curl -fsSL -o package.nupkg \
+            "https://api.nuget.org/v3-flatcontainer/onde.cli/${RELEASE_VERSION}/onde.cli.${RELEASE_VERSION}.nupkg"
+          if ! unzip -p package.nupkg README.md | grep -q "mcp-name: ${server_name}"; then
+            echo "Onde.Cli ${RELEASE_VERSION} README is missing the 'mcp-name: ${server_name}' marker." >&2
+            exit 1
+          fi
+          rm package.nupkg
+
+      - name: Install mcp-publisher
+        shell: bash
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to the MCP Registry
+        shell: bash
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish
+        shell: bash
+        run: ./mcp-publisher publish
+
+      - name: Verify the server is listed
+        shell: bash
+        run: |
+          server_name="$(jq -r '.name' server.json)"
+          curl -fsSL "https://registry.modelcontextprotocol.io/v0.1/servers?search=${server_name}" | jq .
