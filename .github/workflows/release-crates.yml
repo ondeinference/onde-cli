@@ -1,13 +1,22 @@
 name: Release crates.io
 
+# This is the only workflow that reacts to a tag push. It verifies the tag,
+# publishes the crate, and then dispatches every distribution workflow with the
+# same tag. Wrappers never publish for a crate release that failed.
+
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.4.0)"
+        required: true
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: release-crates-${{ github.ref }}
@@ -26,44 +35,69 @@ jobs:
     name: Verify release
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.package.outputs.version }}
-      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Read Rust toolchain
+        shell: bash
+        run: |
+          rust_toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml | head -n 1)"
+          if [ -z "$rust_toolchain" ]; then
+            echo "Failed to read Rust toolchain from rust-toolchain.toml" >&2
+            exit 1
+          fi
+          echo "RUST_TOOLCHAIN=${rust_toolchain}" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
         with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: clippy, rustfmt
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Read package version
-        id: package
+      - name: Set the release version
+        id: release
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            release_tag="${GITHUB_REF_NAME}"
+          else
+            release_tag="${{ github.event.inputs.tag }}"
+            release_tag="${release_tag#refs/tags/}"
+          fi
+          release_version="${release_tag#v}"
+
+          echo "tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${release_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure tag matches Cargo.toml version
         shell: bash
         run: |
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
           if [ -z "$version" ]; then
-            echo "Failed to read package version from Cargo.toml" >&2
+            echo "::error::Failed to read package version from Cargo.toml"
             exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$version" != "${{ steps.release.outputs.version }}" ]; then
+            echo "::error::Cargo.toml is ${version} but the tag is ${{ steps.release.outputs.version }}"
+            exit 1
+          fi
 
-      - name: Read git tag version
-        id: tag
+      - name: Ensure the pub.dev wrapper matches the tag
         shell: bash
         run: |
-          ref="${GITHUB_REF_NAME}"
-          tag="${ref#v}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Ensure tag matches Cargo.toml version
-        if: github.event_name == 'push'
-        shell: bash
-        run: |
-          test "${{ steps.package.outputs.version }}" = "${{ steps.tag.outputs.tag }}"
+          pub_version="$(sed -n 's/^version: \(.*\)/\1/p' pub/onde_cli/pubspec.yaml | head -n 1)"
+          if [ "$pub_version" != "${{ steps.release.outputs.version }}" ]; then
+            echo "::error::pubspec.yaml is ${pub_version} but the tag is ${{ steps.release.outputs.version }}"
+            exit 1
+          fi
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -91,9 +125,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Read Rust toolchain
+        shell: bash
+        run: |
+          rust_toolchain="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml | head -n 1)"
+          echo "RUST_TOOLCHAIN=${rust_toolchain}" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
@@ -101,4 +145,73 @@ jobs:
       - name: Publish crate
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked
+        shell: bash
+        run: |
+          version="${{ needs.verify.outputs.version }}"
+          if curl -sSf "https://crates.io/api/v1/crates/onde-cli/${version}" >/dev/null 2>&1; then
+            echo "onde-cli ${version} is already on crates.io, skipping publish"
+            exit 0
+          fi
+          cargo publish --locked
+
+  dispatch-distributions:
+    name: Trigger distribution workflows
+    needs: [verify, publish]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger GitHub release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-github.yml',
+              ref: '${{ needs.verify.outputs.tag }}',
+              inputs: {
+                tag: '${{ needs.verify.outputs.tag }}'
+              }
+            })
+
+      - name: Trigger npm release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-npm.yml',
+              ref: '${{ needs.verify.outputs.tag }}',
+              inputs: {
+                tag: '${{ needs.verify.outputs.tag }}'
+              }
+            })
+
+      - name: Trigger NuGet release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-nuget.yml',
+              ref: '${{ needs.verify.outputs.tag }}',
+              inputs: {
+                tag: '${{ needs.verify.outputs.tag }}'
+              }
+            })
+
+      - name: Trigger PyPI release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-pypi.yml',
+              ref: '${{ needs.verify.outputs.tag }}',
+              inputs: {
+                tag: '${{ needs.verify.outputs.tag }}'
+              }
+            })
