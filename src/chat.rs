@@ -265,6 +265,13 @@ pub async fn start_chat(
                         Response::Speech { .. } => {}
                         Response::Raw { .. } => {}
                         Response::Embeddings { .. } => {}
+                        // Agentic, diffusion and file events. This is a plain
+                        // chat request with no tools configured, so none of
+                        // them can arrive here.
+                        Response::AgenticToolCallProgress { .. } => {}
+                        Response::AgenticToolApprovalRequired { .. } => {}
+                        Response::BlockDenoisingProgress(_) => {}
+                        Response::File(_) => {}
                     }
                 }
 
