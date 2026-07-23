@@ -64,6 +64,7 @@ The `onde` crate provides the inference engine (`onde::mistralrs`, a vendored mi
 - **Commits:** include `Co-Authored-By: siGit Code <297239231+sigitc@users.noreply.github.com>` trailer when committing with the agent.
 - **`[patch.crates-io]` and `path =` deps:** commented out in `Cargo.toml` for local dev against `onde`/`smbcloud-*`/`candle`. Never commit with these uncommented.
 - **Distribution:** before touching any wrapper package (npm, PyPI, NuGet, pub.dev, Homebrew), read `.agents/skills/distribution/SKILL.md`. Keep all channel versions aligned with the Rust crate version in `Cargo.toml`.
+- **MCP Registry:** the listing's ownership markers ship inside the published npm and NuGet artifacts, so a version published without them can never be listed. See `docs/mcp-registry.md` before touching `server.json` or either marker.
 - **Wrapper packages** are in `npm/`, `pypi/`, `nuget/`, `pub/`. The npm base manifest is rewritten at release time by `npm/scripts/render-main-package.cjs`; do not hand-edit committed package.json versions as the source of truth for releases.
 - **Clippy** runs with `-D warnings` in CI; all lints must pass.
 - **Rust edition:** 2024; toolchain: stable.

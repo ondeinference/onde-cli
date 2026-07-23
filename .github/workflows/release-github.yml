@@ -1,13 +1,11 @@
 name: GitHub Release
 
+# Dispatched by release-crates.yml once the crate publish succeeds.
 on:
-  push:
-    tags:
-      - "v*.*.*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.3.1)"
+        description: "Release tag (e.g. v0.4.0)"
         required: true
 
 permissions:
@@ -184,7 +182,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'release-homebrew.yml',
-              ref: 'main',
+              ref: '${{ steps.tag.outputs.tag }}',
               inputs: {
                 tag: '${{ steps.tag.outputs.tag }}'
               }
@@ -199,7 +197,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               workflow_id: 'release-pub.yml',
-              ref: 'main',
+              ref: '${{ steps.tag.outputs.tag }}',
               inputs: {
                 tag: '${{ steps.tag.outputs.tag }}'
               }

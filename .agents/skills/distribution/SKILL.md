@@ -110,6 +110,34 @@ If a wrapper uses one naming scheme and a workflow uploads another, the installe
 
 ## Release workflow principles
 
+### One tag trigger, then fan out
+
+`release-crates.yml` is the only workflow that reacts to a tag push. It verifies the
+tag against `Cargo.toml` and `pubspec.yaml`, publishes the crate, then dispatches
+`release-github`, `release-npm`, `release-nuget`, and `release-pypi` with the same tag.
+`release-github` in turn dispatches `release-homebrew` and `release-pub` after the
+release assets exist.
+
+```
+tag push
+  └─ release-crates (verify -> publish -> dispatch)
+       ├─ release-github ─┬─ release-homebrew
+       │                  └─ release-pub
+       ├─ release-npm
+       ├─ release-nuget
+       └─ release-pypi
+```
+
+This mirrors `smbcloud-cli`. Two properties matter:
+
+- crates.io is the gate. If verify or publish fails, no wrapper publishes a version
+  that has no crate behind it.
+- every dispatch passes `ref: <tag>`, not `ref: main`, so downstream workflows run the
+  workflow definition from the release state instead of whatever `main` happens to be.
+
+Do not add `push: tags:` to a wrapper workflow. Several workflows racing on the same tag
+is what lets the pub.dev launcher publish before its GitHub Release assets exist.
+
 ### Build first, package second
 
 Always build native binaries in a target matrix first.
