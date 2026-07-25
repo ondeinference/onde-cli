@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.ondeinference/onde-cli",
-  "title": "Onde Inference CLI",
-  "description": "Manage your Onde Inference account and models: apps, model catalog, fine-tuned GGUF deploys.",
+  "title": "Onde Inference CLI: Fine-tune & Deploy Local LLMs",
+  "description": "MCP server to fine-tune LoRA, export GGUF, and deploy local LLMs on Onde Inference.",
   "version": "0.4.1",
   "websiteUrl": "https://ondeinference.com/cli",
   "repository": {
@@ -50,17 +50,28 @@
   ],
   "_meta": {
     "io.modelcontextprotocol.registry/publisher-provided": {
-      "categories": ["developer-tools", "ai"],
+      "categories": ["developer-tools", "ai", "machine-learning"],
       "keywords": [
         "onde",
-        "inference",
+        "onde inference",
+        "mcp",
+        "mcp server",
         "llm",
+        "local llm",
         "fine-tuning",
         "lora",
+        "lora adapter",
         "gguf",
+        "quantization",
+        "qwen",
+        "safetensors",
         "hugging face",
         "model deployment",
-        "on-device"
+        "model catalog",
+        "on-device",
+        "edge ai",
+        "ai agents",
+        "rust cli"
       ],
       "products": {
         "Onde Inference": "https://ondeinference.com"
