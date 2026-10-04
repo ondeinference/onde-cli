@@ -15,3 +15,6 @@
 /pub/onde_cli/pubspec.lock
 
 .env
+
+# Playwright MCP session artifacts
+.playwright-mcp/

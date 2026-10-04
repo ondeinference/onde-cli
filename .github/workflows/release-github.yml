@@ -122,6 +122,25 @@ jobs:
           echo "Archive: ${ARCHIVE_NAME}"
           echo "SHA256:  $(cat "${ARCHIVE_NAME}.sha256")"
 
+      # Scoop and winget consume the raw Windows binaries rather than a
+      # tarball, and both need a SHA256 sidecar. Windows runners use bash from
+      # Git for Windows, which has sha256sum; macOS only has shasum.
+      - name: Checksum release assets
+        shell: bash
+        run: |
+          cd release
+          for asset in *; do
+            case "${asset}" in *.sha256) continue ;; esac
+
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "${asset}" | awk '{print $1}' > "${asset}.sha256"
+            else
+              shasum -a 256 "${asset}" | awk '{print $1}' > "${asset}.sha256"
+            fi
+
+            echo "${asset}: $(cat "${asset}.sha256")"
+          done
+
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4
         with:
@@ -203,3 +222,35 @@ jobs:
               }
             })
             console.log('Dispatched release-pub.yml for tag ${{ steps.tag.outputs.tag }}')
+
+      # These channels publish outside this repo (a Scoop bucket,
+      # microsoft/winget-pkgs) and read checksums off the release created
+      # above, so they hang off this job rather than firing on the tag
+      # directly.
+      - name: Trigger OS package manager releases
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ steps.tag.outputs.tag }}'
+            const workflows = [
+              'release-scoop.yml',
+              'release-winget.yml',
+            ]
+
+            for (const workflow_id of workflows) {
+              try {
+                await github.rest.actions.createWorkflowDispatch({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  workflow_id,
+                  ref: tag,
+                  inputs: { tag },
+                })
+                console.log(`Dispatched ${workflow_id} for tag ${tag}`)
+              } catch (error) {
+                // One packaging channel being unconfigured (a missing secret,
+                // a bucket repo that does not exist yet) should not take the
+                // rest of the fan-out down with it.
+                core.warning(`Failed to dispatch ${workflow_id}: ${error.message}`)
+              }
+            }
