@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: OndeInference.onde-cli
+PackageVersion: @VERSION@
+InstallerType: portable
+# `Commands` is what winget names the shim it drops on PATH. The release
+# assets are onde-win-<arch>.exe, but the command has to be `onde`.
+Commands:
+  - onde
+ReleaseDate: "@RELEASE_DATE@"
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/@REPO@/releases/download/@TAG@/onde-win-amd64.exe
+    InstallerSha256: @SHA_AMD64@
+  - Architecture: arm64
+    InstallerUrl: https://github.com/@REPO@/releases/download/@TAG@/onde-win-arm64.exe
+    InstallerSha256: @SHA_ARM64@
+ManifestType: installer
+ManifestVersion: 1.6.0
