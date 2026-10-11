@@ -3,7 +3,7 @@
   "name": "io.github.ondeinference/onde-cli",
   "title": "Onde Inference CLI: Fine-tune & Deploy Local LLMs",
   "description": "MCP server to fine-tune LoRA, export GGUF, and deploy local LLMs on Onde Inference.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "websiteUrl": "https://ondeinference.com/cli",
   "repository": {
     "url": "https://github.com/ondeinference/onde-cli",
@@ -15,7 +15,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@ondeinference/cli",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"
@@ -33,7 +33,7 @@
       "registryType": "nuget",
       "registryBaseUrl": "https://api.nuget.org/v3/index.json",
       "identifier": "Onde.Cli",
-      "version": "0.4.1",
+      "version": "0.4.2",
       "runtimeHint": "dnx",
       "transport": {
         "type": "stdio"
