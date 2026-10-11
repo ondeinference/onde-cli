@@ -13,7 +13,22 @@ mod project;
 mod token;
 mod ui;
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
+
+/// One-line usage, printed for `--help` and whenever `onde` is launched
+/// without an attached terminal.
+fn print_usage() {
+    println!(
+        "onde {}\n{}\n\n\
+         Usage:\n  \
+         onde            Launch the interactive terminal UI (requires a TTY)\n  \
+         onde --mcp      Run the MCP JSON-RPC server over stdio\n  \
+         onde --version  Print the version and exit\n  \
+         onde --help     Print this help and exit",
+        env!("CARGO_PKG_VERSION"),
+        env!("CARGO_PKG_DESCRIPTION"),
+    );
+}
 
 /// Redirect **both** stdout and stderr to `~/.cache/onde/debug.log` before
 /// ratatui takes over the alternate screen.
@@ -79,6 +94,27 @@ async fn main() -> anyhow::Result<()> {
     // stdout/stderr, and we return before touching the terminal at all.
     if std::env::args().skip(1).any(|arg| arg == "--mcp") {
         return mcp::serve().await;
+    }
+
+    // Bare `--version`/`--help` must work without a terminal.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "--version" || arg == "-V") {
+        println!("onde {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|arg| arg == "--help" || arg == "-h") {
+        print_usage();
+        return Ok(());
+    }
+
+    // The TUI needs a real terminal. When stdout isn't a TTY — e.g. the winget
+    // submission validator runs the executable headlessly with no arguments —
+    // enabling raw mode / the alternate screen below fails and the process
+    // exits non-zero (Validation-Executable-Error). Print usage and exit 0
+    // instead of launching ratatui into a pipe.
+    if !std::io::stdout().is_terminal() {
+        print_usage();
+        return Ok(());
     }
 
     let tty = redirect_output();
