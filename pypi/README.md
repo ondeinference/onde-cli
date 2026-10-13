@@ -42,7 +42,7 @@ That installs the native `onde` binary for your platform. No compiler setup, no 
 Run:
 
 ```sh
-onde
+onde --tui
 ```
 
 and you'll get a full terminal UI where you can:

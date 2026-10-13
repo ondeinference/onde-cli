@@ -49,10 +49,10 @@ It works on:
 ## Run it
 
 ```sh
-onde
+onde --tui
 ```
 
-That opens the terminal UI.
+That opens the terminal UI. Plain `onde` prints usage and exits.
 
 From there you can:
 

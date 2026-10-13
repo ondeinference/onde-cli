@@ -11,7 +11,7 @@ dart pub global activate onde_cli
 ## Run
 
 ```sh
-onde
+onde --tui
 ```
 
 That opens the Onde terminal UI for account management, app setup, and local model fine-tuning. On first run, the launcher downloads the right native binary into `~/.onde/cli`. After that it reuses the local copy. For package details, platform notes, and the full install matrix, see <https://ondeinference.com/cli>.

@@ -15,19 +15,20 @@ mod ui;
 
 use std::io::{IsTerminal, Write};
 
-/// One-line usage, printed for `--help` and whenever `onde` is launched
-/// without an attached terminal.
-fn print_usage() {
-    println!(
+/// Usage text, printed for `--help`, for bare `onde`, and (to stderr) for
+/// unknown arguments.
+fn usage() -> String {
+    format!(
         "onde {}\n{}\n\n\
          Usage:\n  \
-         onde            Launch the interactive terminal UI (requires a TTY)\n  \
+         onde            Print this usage and exit\n  \
+         onde --tui      Launch the interactive terminal UI (requires a TTY)\n  \
          onde --mcp      Run the MCP JSON-RPC server over stdio\n  \
          onde --version  Print the version and exit\n  \
          onde --help     Print this help and exit",
         env!("CARGO_PKG_VERSION"),
         env!("CARGO_PKG_DESCRIPTION"),
-    );
+    )
 }
 
 /// Redirect **both** stdout and stderr to `~/.cache/onde/debug.log` before
@@ -103,17 +104,29 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        print_usage();
+        println!("{}", usage());
         return Ok(());
     }
 
-    // The TUI needs a real terminal. When stdout isn't a TTY — e.g. the winget
-    // submission validator runs the executable headlessly with no arguments —
-    // enabling raw mode / the alternate screen below fails and the process
-    // exits non-zero (Validation-Executable-Error). Print usage and exit 0
-    // instead of launching ratatui into a pipe.
+    // Bare `onde` is headless: winget's validator launches the exe with no
+    // arguments and expects exit 0, so it must not open the TUI. A real
+    // one-shot mode can replace this later.
+    if args.is_empty() {
+        println!("{}", usage());
+        return Ok(());
+    }
+
+    // Anything but `--tui` is a typo; don't let it silently succeed.
+    if args != ["--tui"] {
+        eprintln!("{}", usage());
+        std::process::exit(2);
+    }
+
+    // The TUI needs a real terminal. When stdout isn't a TTY (`onde --tui | cat`),
+    // enabling raw mode / the alternate screen below fails, so print usage and
+    // exit 0 instead of launching ratatui into a pipe.
     if !std::io::stdout().is_terminal() {
-        print_usage();
+        println!("{}", usage());
         return Ok(());
     }
 
