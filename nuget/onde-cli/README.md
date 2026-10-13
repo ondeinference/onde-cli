@@ -19,7 +19,7 @@ dotnet tool update --global Onde.Cli
 ## Run
 
 ```sh
-onde
+onde --tui
 ```
 
 That opens the terminal UI for account management, app setup, and local model fine-tuning. For package details, platform notes, and the full install matrix, see <https://ondeinference.com/cli>.

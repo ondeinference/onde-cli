@@ -1,0 +1,35 @@
+{
+  "skill_name": "release",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Cut release v0.4.3 for onde-cli. Bump all version pins, follow the repo's release branch flow, tag, and push.",
+      "expected_output": "Agent bumps Cargo.toml, pubspec.yaml, server.json (3 spots), commits signed with Co-Authored-By trailer, creates release/v0.4.3 from development, merges --no-ff into development then main, tags the main merge commit, pushes development+main+tag, and watches the release pipeline.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "We fast-forwarded main to the version bump commit by mistake and tagged it. development is now behind main. Fix the repo state without rewriting pushed history.",
+      "expected_output": "Agent recognizes the git skill's rule (tag belongs on a merge commit; development must carry the release state) and back-merges main into development with --no-ff instead of rewriting main or deleting the pushed tag.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "The v0.4.2 tag push failed the crates.io verify step because pubspec.yaml still said 0.4.1. Nothing was published. Walk me through fixing it and re-releasing.",
+      "expected_output": "Agent fixes the pubspec version on a new release branch or hotfix, re-runs the release flow, deletes and recreates the tag only if crates.io never published, and explains why crates.io versions are immutable so a published 0.4.2 would require 0.4.3 instead.",
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "Update the README install instructions for the npm wrapper and fix the NuGet README badge that points at the wrong package id.",
+      "expected_output": "Should NOT deeply engage the release skill beyond reading it; this is distribution/README work. Agent edits npm/onde-cli/README.md and nuget/onde-cli/README.md without cutting a release, bumping versions, or tagging.",
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "Merge the feature/lora-scheduler branch into development.",
+      "expected_output": "Should NOT trigger the release skill; this is a normal feature merge governed by the git skill (--no-ff into development, no tag).",
+      "files": []
+    }
+  ]
+}

@@ -91,6 +91,13 @@ jobs:
         shell: bash
         run: cargo build --locked --release --target ${{ matrix.target }}
 
+      # The exe must not import the VC++ runtime DLLs (see .cargo/config.toml), or it fails to
+      # load on a machine without the redistributable. Hostx64 dumpbin reads arm64 PE files too.
+      - name: Check static CRT
+        if: matrix.runner == 'windows-latest'
+        shell: pwsh
+        run: ./packaging/windows/check-static-crt.ps1 -Path target/${{ matrix.target }}/release/onde.exe
+
       - name: Package binary
         shell: bash
         run: |

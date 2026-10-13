@@ -49,9 +49,9 @@ brew install onde
 pip install onde-cli
 # or
 uv tool install onde-cli
-uv run onde
+uv run onde --tui
 # or with
-uvx --from onde-cli onde
+uvx --from onde-cli onde --tui
 ```
 
 ### .NET tool
@@ -92,10 +92,10 @@ chmod +x onde && mv onde /usr/local/bin/onde
 ## Usage
 
 ```sh
-onde
+onde --tui
 ```
 
-This opens the TUI. You can sign up or sign in right there.
+This opens the TUI. Plain `onde` prints usage and exits. You can sign up or sign in right there.
 
 | Key | What it does |
 |---|---|
@@ -138,7 +138,7 @@ Save the file wherever you want. The TUI lets you point to it directly.
 ### Running it
 
 ```
-onde
+onde --tui
   → Models tab (Tab from Apps)
   → Select a safetensors model (↑↓, Enter)
   → Press f
