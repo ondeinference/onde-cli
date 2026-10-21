@@ -1,4 +1,4 @@
-name: Release crates.io
+name: CLI Release Crates.io
 
 # This is the only workflow that reacts to a tag push. It verifies the tag,
 # publishes the crate, and then dispatches every distribution workflow with the

@@ -1,4 +1,4 @@
-name: NuGet Release
+name: CLI Release NuGet
 
 # Dispatched by release-crates.yml once the crate publish succeeds.
 on:

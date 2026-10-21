@@ -1,4 +1,4 @@
-name: PyPI Release
+name: CLI Release PyPI
 
 # Dispatched by release-crates.yml once the crate publish succeeds.
 on:

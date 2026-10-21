@@ -1,4 +1,4 @@
-name: pub.dev Release
+name: CLI Release pub.dev
 
 on:
   workflow_dispatch:

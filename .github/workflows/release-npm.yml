@@ -1,4 +1,4 @@
-name: NPM Release
+name: CLI Release NPM
 
 # Dispatched by release-crates.yml once the crate publish succeeds.
 on:

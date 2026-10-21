@@ -1,4 +1,4 @@
-name: GitHub Release
+name: CLI Release GitHub
 
 # Dispatched by release-crates.yml once the crate publish succeeds.
 on:
