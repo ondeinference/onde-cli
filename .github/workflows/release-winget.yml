@@ -33,7 +33,7 @@ permissions:
 
 env:
   REPO: ondeinference/onde-cli
-  PACKAGE_IDENTIFIER: OndeInference.onde-cli
+  PACKAGE_IDENTIFIER: OndeInference.CLI
 
 jobs:
   submit-winget-manifest:
@@ -133,7 +133,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # manifests are filed under the lowercased first letter of the
-          # publisher, e.g. manifests/o/OndeInference/onde-cli.
+          # publisher, e.g. manifests/o/OndeInference/CLI.
           PUBLISHER="${PACKAGE_IDENTIFIER%%.*}"
           NAME="${PACKAGE_IDENTIFIER#*.}"
           FIRST=$(echo "${PUBLISHER:0:1}" | tr '[:upper:]' '[:lower:]')
