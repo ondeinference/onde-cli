@@ -35,8 +35,8 @@ smbcloud-auth-sdk = "0.3.34"
 smbcloud-model = "0.3.35"
 smbcloud-network = "0.3.35"
 smbcloud-gresiq-sdk = "0.4.9"
-candle-core = "0.10.2"
-candle-nn = "0.10.2"
+candle-core = { package = "onde-candle-core", version = "0.11.2" }
+candle-nn = { package = "onde-candle-nn", version = "0.11.2" }
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -48,7 +48,7 @@ onde = "1.2.2"
 # Metal and Accelerate are macOS-only frameworks; Cargo merges features so on
 # macOS these are added on top of the base candle-core dep above.
 [target.'cfg(target_os = "macos")'.dependencies]
-candle-core = { version = "0.10.2", features = ["metal", "accelerate"] }
+candle-core = { package = "onde-candle-core", version = "0.11.2", features = ["metal", "accelerate"] }
 
 # ---------------------------------------------------------------------------
 # Local development overrides
@@ -62,3 +62,5 @@ candle-core = { version = "0.10.2", features = ["metal", "accelerate"] }
 # smbcloud-gresiq-sdk = { path = "../smbcloud-cli/crates/smbcloud-gresiq-sdk" }
 # candle-core         = { path = "../candle/candle-core" }
 # candle-nn           = { path = "../candle/candle-nn" }
+
+

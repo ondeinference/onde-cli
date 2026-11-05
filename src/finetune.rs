@@ -1157,6 +1157,9 @@ impl LoraQwenModel {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod spike;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
