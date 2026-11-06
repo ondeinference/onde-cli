@@ -113,7 +113,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
-          cd npm
+          cd packaging/npm
 
           # Binary name from Cargo.toml
           cargo_bin="onde"
@@ -198,7 +198,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
-          cd npm/onde-cli
+          cd packaging/npm/onde-cli
 
           # Rewrite package.json with the correct release version and
           # matching optionalDependency versions

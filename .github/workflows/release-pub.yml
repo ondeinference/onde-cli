@@ -45,7 +45,7 @@ jobs:
           from pathlib import Path
           import os
           release_version = os.environ['RELEASE_VERSION']
-          pubspec = Path('pub/onde_cli/pubspec.yaml')
+          pubspec = Path('packaging/pub/onde_cli/pubspec.yaml')
           lines = pubspec.read_text().splitlines()
           for index, line in enumerate(lines):
               if line.startswith('version: '):
@@ -54,15 +54,15 @@ jobs:
           PY
 
       - name: Get package dependencies
-        working-directory: pub/onde_cli
+        working-directory: packaging/pub/onde_cli
         run: dart pub get
 
       - name: Analyze Dart package
-        working-directory: pub/onde_cli
+        working-directory: packaging/pub/onde_cli
         run: dart analyze
 
       - name: Dry-run publish
-        working-directory: pub/onde_cli
+        working-directory: packaging/pub/onde_cli
         run: dart pub publish --dry-run
 
   publish-pub:
@@ -96,7 +96,7 @@ jobs:
           from pathlib import Path
           import os
           release_version = os.environ['RELEASE_VERSION']
-          pubspec = Path('pub/onde_cli/pubspec.yaml')
+          pubspec = Path('packaging/pub/onde_cli/pubspec.yaml')
           lines = pubspec.read_text().splitlines()
           for index, line in enumerate(lines):
               if line.startswith('version: '):
@@ -125,5 +125,5 @@ jobs:
 
       - name: Publish package
         if: steps.pub-check.outputs.exists != 'true'
-        working-directory: pub/onde_cli
+        working-directory: packaging/pub/onde_cli
         run: dart pub publish --force

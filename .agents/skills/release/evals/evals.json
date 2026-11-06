@@ -4,7 +4,7 @@
     {
       "id": 1,
       "prompt": "Cut release v0.4.3 for onde-cli. Bump all version pins, follow the repo's release branch flow, tag, and push.",
-      "expected_output": "Agent bumps Cargo.toml, pubspec.yaml, server.json (3 spots), commits signed with Co-Authored-By trailer, creates release/v0.4.3 from development, merges --no-ff into development then main, tags the main merge commit, pushes development+main+tag, and watches the release pipeline.",
+      "expected_output": "Agent bumps Cargo.toml, pubspec.yaml, packaging/mcp/server.json (3 spots), commits signed with Co-Authored-By trailer, creates release/v0.4.3 from development, merges --no-ff into development then main, tags the main merge commit, pushes development+main+tag, and watches the release pipeline.",
       "files": []
     },
     {
@@ -22,7 +22,7 @@
     {
       "id": 4,
       "prompt": "Update the README install instructions for the npm wrapper and fix the NuGet README badge that points at the wrong package id.",
-      "expected_output": "Should NOT deeply engage the release skill beyond reading it; this is distribution/README work. Agent edits npm/onde-cli/README.md and nuget/onde-cli/README.md without cutting a release, bumping versions, or tagging.",
+      "expected_output": "Should NOT deeply engage the release skill beyond reading it; this is distribution/README work. Agent edits packaging/npm/onde-cli/README.md and packaging/nuget/onde-cli/README.md without cutting a release, bumping versions, or tagging.",
       "files": []
     },
     {
