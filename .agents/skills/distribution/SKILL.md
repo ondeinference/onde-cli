@@ -56,9 +56,9 @@ Good fit for users who already live in npm tooling.
 
 Important release detail:
 
-- the committed `npm/onde-cli/package.json` is a working file, not the publish-time source of truth
-- the release workflow rewrites the base package manifest with `npm/scripts/render-main-package.cjs`
-- platform package manifests are generated on the fly with `npm/scripts/render-platform-package.cjs`
+- the committed `packaging/npm/onde-cli/package.json` is a working file, not the publish-time source of truth
+- the release workflow rewrites the base package manifest with `packaging/npm/scripts/render-main-package.cjs`
+- platform package manifests are generated on the fly with `packaging/npm/scripts/render-platform-package.cjs`
 - the actual npm version comes from the release tag via `RELEASE_VERSION`, not from manually editing the committed npm manifest before publish
 
 ### PyPI
@@ -177,7 +177,7 @@ That makes the safest design a thin Dart launcher that downloads the right nativ
 
 Practical consequences:
 
-- `pub/onde_cli/native/` should stay out of the published package
+- `packaging/pub/onde_cli/native/` should stay out of the published package
 - do not set `publish_to: https://pub.dev` in `pubspec.yaml`; omit `publish_to` for normal pub.dev publishing
 - use package-level ignore rules so local native staging does not leak into publish input
 - keep release asset names aligned with the GitHub Release workflow, because the launcher depends on them
@@ -186,9 +186,9 @@ Practical consequences:
 
 Run these during verification:
 
-- `dart pub get --directory pub/onde_cli`
-- `dart analyze pub/onde_cli`
-- `dart pub publish --dry-run --directory pub/onde_cli`
+- `dart pub get --directory packaging/pub/onde_cli`
+- `dart analyze packaging/pub/onde_cli`
+- `dart pub publish --dry-run --directory packaging/pub/onde_cli`
 
 ## NuGet-specific notes
 
@@ -210,10 +210,10 @@ Every user-facing channel should document the same product with channel-specific
 Main files:
 
 - `README.md`
-- `npm/onde-cli/README.md`
-- `pypi/README.md`
-- `nuget/onde-cli/README.md`
-- `pub/onde_cli/README.md`
+- `packaging/npm/onde-cli/README.md`
+- `packaging/pypi/README.md`
+- `packaging/nuget/onde-cli/README.md`
+- `packaging/pub/onde_cli/README.md`
 
 Keep these aligned on:
 

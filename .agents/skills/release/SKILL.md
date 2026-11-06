@@ -24,18 +24,19 @@ and the distribution skill (channel details) — this skill is the concrete runb
 These files pin the crate version and must all move together:
 
 - `Cargo.toml` — `version = "X.Y.Z"` in `[package]`
-- `pub/onde_cli/pubspec.yaml` — `version: X.Y.Z`
-- `server.json` — three occurrences: top-level `version`, and the npm and NuGet
+- `packaging/pub/onde_cli/pubspec.yaml` — `version: X.Y.Z`
+- `packaging/mcp/server.json` — three occurrences: top-level `version`, and the npm and NuGet
   `packages[].version` entries (search for the old version string to catch all)
 
 `docs/mcp-registry.md` and `.github/workflows/release-mcp-registry.yml` mention
 past versions only as historical examples — do not bump those.
 
 The npm wrapper manifests are NOT bump targets: the committed `package.json` files
-are rewritten at release time by `npm/scripts/render-*.cjs` from the tag.
+are rewritten at release time by `packaging/npm/scripts/render-*.cjs` from the tag.
 
-After editing, run `cargo check --locked` (or let the build update `Cargo.lock`)
-so the lockfile carries the new version, and commit it in the same bump commit.
+After editing, run `cargo check` so `Cargo.lock` picks up the new version, then
+`cargo check --locked` to confirm, and commit the lockfile in the bump commit.
+(`--locked` refuses to rewrite the lockfile, so it can't be the step that updates it.)
 
 ## Sequence
 
@@ -43,6 +44,7 @@ Follow the git skill's branch flow — `release/vX.Y.Z → development → main`
 `--no-ff` at every hop, tag on the final `main` merge commit. Concretely:
 
 ```bash
+git fetch <remote>                     # pre-flight: local development/main must match the remote tips
 git checkout development
 git pull <remote> development          # start from the pushed tip
 git checkout -b release/vX.Y.Z
@@ -57,6 +59,10 @@ git tag vX.Y.Z
 git push <remote> development main vX.Y.Z
 git branch -d release/vX.Y.Z           # only after the merge lands
 ```
+
+Before the checkout, compare local `development` and `main` with the remote tips
+(`git rev-list --left-right --count development...<remote>/development`). If a checkout
+is blocked by untracked leftovers, move them aside; don't delete them.
 
 The remote here is the one whose URL is the sigit.si or GitHub org repo —
 check `git remote -v`; this repo is commonly cloned with per-account remotes
@@ -101,18 +107,23 @@ Every `git commit` and `git merge` in this flow creates a commit — configure
 signing so merges are signed too, or amend unsigned ones before pushing
 (`git commit --amend --no-edit -S`, only on unpushed commits).
 
-Commit trailer: end release-related commit messages with
-
-```
-Co-Authored-By: siGit Code v1.6.7-acp <noreply@sigit.si>
-```
+Commit trailer: end release commits with the co-author trailer of the agent making
+the commit, exactly as that agent's system prompt gives it, for example
+`OndeCode v<version>-<surface> <noreply@ondeinference.com>` or
+`siGit Code v<version>-<surface> <noreply@sigit.si>`. Don't copy a version from an
+older commit or from this file.
 
 ## The tag push is the release
 
-Pushing `vX.Y.Z` triggers `release-crates.yml`, which verifies the tag against
-`Cargo.toml` and `pubspec.yaml`, publishes the crate, then dispatches the
-wrapper workflows (GitHub Releases, npm, NuGet, PyPI, then Homebrew and pub.dev
-after the GitHub Release assets exist). There is no separate "publish" step.
+Pushing `vX.Y.Z` triggers a three-level chain. There is no separate "publish" step.
+
+1. `release-crates.yml` (CLI Release Crates.io) checks the tag against `Cargo.toml` and
+   `packaging/pub/onde_cli/pubspec.yaml`, publishes the crate, then dispatches
+   **GitHub, npm, NuGet and PyPI**.
+2. `release-github.yml` (CLI Release GitHub) then dispatches **Homebrew, pub.dev, Scoop and winget**
+   once the release assets exist. A failed Scoop or winget dispatch only logs a warning
+   (`core.warning`), so it is easy to miss.
+3. `release-nuget.yml` (CLI Release NuGet) then dispatches the **MCP Registry Release**.
 
 Watch it land:
 
@@ -121,7 +132,7 @@ gh run list --branch vX.Y.Z
 gh run watch <run-id> --exit-status
 ```
 
-`CI` also runs on the tag push; both should be green. If `release-crates` fails,
+`Tests` (`ci.yml`) also runs on the tag push; both should be green. If `release-crates` fails,
 no wrapper publishes — fix the cause, move the tag only if it has not published
 anything yet (crates.io versions are immutable; a failed verify is safe to retry,
 a published crate is not).
@@ -132,9 +143,14 @@ After the pipeline finishes, spot-check the fan-out (all idempotent, safe to re-
 
 - crates.io: `cargo search onde-cli --limit 1`
 - GitHub Release: `gh release view vX.Y.Z`
-- npm: `npm view onde-cli version`
+- npm: `npm view @ondeinference/cli version`
 - PyPI: `https://pypi.org/pypi/onde-cli/json` → `info.version`
-- NuGet: flat container index for `onde-cli`
+- NuGet: `https://api.nuget.org/v3-flatcontainer/onde.cli/index.json`
+- pub.dev: `https://pub.dev/api/packages/onde_cli` → `latest.version`
+- MCP Registry: the `MCP Registry Release` run is green
+- Scoop / winget: `gh run list --workflow release-scoop.yml` / `--workflow release-winget.yml`
+  show a run for the tag (they can silently not dispatch). winget lands as a PR to
+  `microsoft/winget-pkgs` and only appears after Microsoft's review.
 - Homebrew/pub.dev trail the GitHub Release; they may take a few extra minutes
 
 ## Failure modes seen before
@@ -145,5 +161,8 @@ After the pipeline finishes, spot-check the fan-out (all idempotent, safe to re-
 - Deleting a leftover `release/` branch that contained unsigned bump commits and
   redoing the bump fresh — fine, but check it first.
 - Forgetting `Cargo.lock` in the bump commit.
+- Stale local `development`/`main` (once 12 commits behind the remote), with checkout
+  blocked by untracked leftovers from a branch made before the `packaging/` move, at
+  paths the newer branch tracks. Fetch first, move the leftovers aside, don't delete.
 - Pushing with the wrong `gh` account active — the push works, but PR/issue
   actions afterwards get attributed to the wrong identity.

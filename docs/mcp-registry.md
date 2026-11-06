@@ -11,9 +11,9 @@ install.
 
 | Piece | Where |
 | --- | --- |
-| Server metadata | [`server.json`](../server.json) at the repo root |
-| npm ownership proof | `mcpName` in `npm/package-main.json.tmpl`, copied verbatim into the published manifest by `npm/scripts/render-main-package.cjs` |
-| NuGet ownership proof | `<!-- mcp-name: ... -->` in `nuget/onde-cli/README.md` |
+| Server metadata | [`server.json`](../packaging/mcp/server.json) |
+| npm ownership proof | `mcpName` in `packaging/npm/package-main.json.tmpl`, copied verbatim into the published manifest by `packaging/npm/scripts/render-main-package.cjs` |
+| NuGet ownership proof | `<!-- mcp-name: ... -->` in `packaging/nuget/onde-cli/README.md` |
 | Publishing | `.github/workflows/release-mcp-registry.yml` |
 
 The registry checks each listed package for a marker naming the server. If the
@@ -102,7 +102,7 @@ Rarely needed, but if Actions is unavailable:
 ```sh
 brew install mcp-publisher
 mcp-publisher login github        # device flow, needs push access to ondeinference
-mcp-publisher publish             # reads ./server.json
+mcp-publisher publish             # reads ./server.json (run it from packaging/mcp)
 ```
 
 Versions are immutable — republishing the same version is rejected. Fixing a bad
