@@ -153,7 +153,7 @@ jobs:
             cargo_bin="${cargo_bin}.exe"
           fi
 
-          cp "../target/${{ matrix.build.TARGET }}/release/${cargo_bin}" "${node_pkg}/bin"
+          cp "../../target/${{ matrix.build.TARGET }}/release/${cargo_bin}" "${node_pkg}/bin"
 
           cd "${node_pkg}"
 
