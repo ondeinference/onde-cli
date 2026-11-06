@@ -60,7 +60,7 @@ candle-core = { package = "onde-candle-core", version = "0.11.2", features = ["m
 # smbcloud-model      = { path = "../smbcloud-cli/crates/smbcloud-model" }
 # smbcloud-network    = { path = "../smbcloud-cli/crates/smbcloud-network" }
 # smbcloud-gresiq-sdk = { path = "../smbcloud-cli/crates/smbcloud-gresiq-sdk" }
-# candle-core         = { path = "../candle/candle-core" }
-# candle-nn           = { path = "../candle/candle-nn" }
+# onde-candle-core    = { path = "../candle/candle-core" }
+# onde-candle-nn      = { path = "../candle/candle-nn" }
 
 
