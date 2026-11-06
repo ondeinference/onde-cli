@@ -25,9 +25,20 @@ GGUF. It runs as a terminal UI, or as an MCP server for agents.
 
 ## Install
 
+Pick one:
+
 ```sh
+# Homebrew
 brew tap ondeinference/homebrew-tap && brew trust --tap ondeinference/homebrew-tap && brew install onde
+```
+
+```sh
+# npm
 npm install -g @ondeinference/cli
+```
+
+```sh
+# Cargo
 cargo install onde-cli
 ```
 

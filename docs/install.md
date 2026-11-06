@@ -1,6 +1,6 @@
 # Install
 
-Pick one. All of them put the same `onde` binary on your PATH.
+Pick one. Each method installs an `onde` command on your PATH.
 
 ## npm
 
