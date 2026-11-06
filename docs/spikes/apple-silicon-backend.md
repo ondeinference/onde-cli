@@ -87,10 +87,10 @@ export ONDE_SPIKE_MODEL_DIR=/path/to/qwen3-0.6b
 cargo test --release finetune::spike::spike_dump_reference -- --ignored --nocapture
 cargo test --release finetune::spike::spike_op_differential -- --ignored --nocapture
 ONDE_SPIKE_PERTURB=1 cargo test --release finetune::spike::spike_grad_differential -- --ignored --nocapture
-ONDE_SPIKE_DEVICE=cpu ONDE_SPIKE_SEQ=256 cargo test --release finetune::spike::spike_overfit_bench -- --ignored --nocapture
+ONDE_SPIKE_DEVICE=cpu ONDE_SPIKE_SEQ=256 ONDE_SPIKE_EPOCHS=6 cargo test --release finetune::spike::spike_overfit_bench -- --ignored --nocapture
 
 # MLX side
 cd docs/spikes/mlx && cargo build --release
 ./target/release/mlx-spike grad
-ONDE_SPIKE_SEQ=256 ./target/release/mlx-spike bench
+ONDE_SPIKE_SEQ=256 ONDE_SPIKE_EPOCHS=6 ./target/release/mlx-spike bench
 ```
