@@ -1156,7 +1156,10 @@ impl LoraQwenModel {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+// spike.rs calls Device::new_metal, which only exists when candle-core's
+// `metal` feature is on — and that feature is macOS-only (see Cargo.toml), so
+// `cargo test` would fail to compile on other targets without this gate.
+#[cfg(all(test, target_os = "macos"))]
 mod spike;
 
 #[cfg(test)]
