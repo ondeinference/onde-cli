@@ -39,11 +39,26 @@ fn device_from_env() -> Device {
 fn batch(seq: usize, n: usize) -> Vec<Vec<u32>> {
     let tok = Tokenizer::from_file(model_dir().join("tokenizer.json")).unwrap();
     let topics = [
-        "the harbour at dawn", "a bread recipe", "tide tables", "a bicycle repair",
-        "a train timetable", "garden soil", "a chess opening", "winter clothing",
-        "a lighthouse keeper", "river maps", "a tea ceremony", "a pottery kiln",
-        "a market stall", "a sailing knot", "a night sky chart", "a library card",
-        "a violin lesson", "a mountain hut", "a postage stamp", "a weather report",
+        "the harbour at dawn",
+        "a bread recipe",
+        "tide tables",
+        "a bicycle repair",
+        "a train timetable",
+        "garden soil",
+        "a chess opening",
+        "winter clothing",
+        "a lighthouse keeper",
+        "river maps",
+        "a tea ceremony",
+        "a pottery kiln",
+        "a market stall",
+        "a sailing knot",
+        "a night sky chart",
+        "a library card",
+        "a violin lesson",
+        "a mountain hut",
+        "a postage stamp",
+        "a weather report",
     ];
     (0..n)
         .map(|i| {
@@ -124,7 +139,8 @@ fn spike_grad_differential() {
         let shape = c.as_tensor().dims().to_vec();
         c.set(&Tensor::from_vec(vals.clone(), shape.clone(), &Device::Cpu).unwrap())
             .unwrap();
-        m.set(&Tensor::from_vec(vals, shape, &metal).unwrap()).unwrap();
+        m.set(&Tensor::from_vec(vals, shape, &metal).unwrap())
+            .unwrap();
     }
 
     let ids = &batch(seq, 1)[0];
@@ -136,8 +152,13 @@ fn spike_grad_differential() {
     let lm = loss_of(&mtl_model, &cfg, ids, &metal);
     let gm = lm.backward().unwrap();
     let mtl_ms = t0.elapsed().as_millis();
-    let (lcv, lmv) = (lc.to_scalar::<f32>().unwrap(), lm.to_scalar::<f32>().unwrap());
-    eprintln!("seq {seq} perturb {perturb}: loss cpu {lcv:.5} metal {lmv:.5}  fwd+bwd cpu {cpu_ms} ms metal {mtl_ms} ms");
+    let (lcv, lmv) = (
+        lc.to_scalar::<f32>().unwrap(),
+        lm.to_scalar::<f32>().unwrap(),
+    );
+    eprintln!(
+        "seq {seq} perturb {perturb}: loss cpu {lcv:.5} metal {lmv:.5}  fwd+bwd cpu {cpu_ms} ms metal {mtl_ms} ms"
+    );
 
     let mut worst = 0f64;
     let mut worst_name = 0usize;
@@ -184,7 +205,11 @@ fn spike_grad_differential() {
         .iter()
         .enumerate()
         .rev()
-        .find(|(_, v)| gm.get(v.as_tensor()).map(|g| norm(&flat(g)) > 0.0).unwrap_or(false))
+        .find(|(_, v)| {
+            gm.get(v.as_tensor())
+                .map(|g| norm(&flat(g)) > 0.0)
+                .unwrap_or(false)
+        })
         .map(|(i, _)| i)
         .unwrap();
     let v = &mtl_vars[target];
@@ -195,12 +220,20 @@ fn spike_grad_differential() {
     let shape = v.as_tensor().dims().to_vec();
     let h = 1e-2f32;
     let eval = |sign: f32| -> f64 {
-        let moved: Vec<f32> = base.iter().zip(&dir).map(|(b, d)| b + sign * h * d).collect();
-        v.set(&Tensor::from_vec(moved, shape.clone(), &metal).unwrap()).unwrap();
-        loss_of(&mtl_model, &cfg, ids, &metal).to_scalar::<f32>().unwrap() as f64
+        let moved: Vec<f32> = base
+            .iter()
+            .zip(&dir)
+            .map(|(b, d)| b + sign * h * d)
+            .collect();
+        v.set(&Tensor::from_vec(moved, shape.clone(), &metal).unwrap())
+            .unwrap();
+        loss_of(&mtl_model, &cfg, ids, &metal)
+            .to_scalar::<f32>()
+            .unwrap() as f64
     };
     let fd = (eval(1.0) - eval(-1.0)) / (2.0 * h as f64);
-    v.set(&Tensor::from_vec(base, shape, &metal).unwrap()).unwrap();
+    v.set(&Tensor::from_vec(base, shape, &metal).unwrap())
+        .unwrap();
     eprintln!(
         "finite difference on var {target}: fd {fd:.5e} vs |grad| {gn:.5e} (ratio {:.4})",
         fd / gn
@@ -280,10 +313,14 @@ fn spike_overfit_bench() {
 // ---------------------------------------------------------------------------
 
 fn rnd(n: usize, seed: u64) -> Vec<f32> {
-    let mut s = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut s = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     (0..n)
         .map(|_| {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((s >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
         })
         .collect()
@@ -310,12 +347,7 @@ fn check(name: &str, shapes: &[&[usize]], f: &dyn Fn(&[Tensor], &Device) -> Tens
             .collect();
         let ts: Vec<Tensor> = vars.iter().map(|v| v.as_tensor().clone()).collect();
         let out = f(&ts, dev);
-        let w = Tensor::from_vec(
-            rnd(out.elem_count(), 99),
-            out.dims().to_vec(),
-            dev,
-        )
-        .unwrap();
+        let w = Tensor::from_vec(rnd(out.elem_count(), 99), out.dims().to_vec(), dev).unwrap();
         let loss = (&out * &w).unwrap().sum_all().unwrap();
         let grads = loss.backward().unwrap();
         let g = vars
@@ -337,7 +369,11 @@ fn check(name: &str, shapes: &[&[usize]], f: &dyn Fn(&[Tensor], &Device) -> Tens
     eprintln!(
         "{} {name:<28} fwd {fwd:.2e}  grads {}",
         if ok { "ok  " } else { "FAIL" },
-        grads.iter().map(|g| format!("{g:.2e}")).collect::<Vec<_>>().join(" ")
+        grads
+            .iter()
+            .map(|g| format!("{g:.2e}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     );
     ok
 }
@@ -347,19 +383,32 @@ fn check(name: &str, shapes: &[&[usize]], f: &dyn Fn(&[Tensor], &Device) -> Tens
 fn spike_op_differential() {
     let mut ok = true;
     macro_rules! c { ($($t:tt)*) => { ok &= check($($t)*); } }
-    c!("matmul 2d", &[&[24, 16], &[16, 12]], &|x, _| x[0].matmul(&x[1]).unwrap());
-    c!("matmul x W^T", &[&[24, 16], &[12, 16]], &|x, _| x[0].matmul(&x[1].t().unwrap()).unwrap());
+    c!("matmul 2d", &[&[24, 16], &[16, 12]], &|x, _| x[0]
+        .matmul(&x[1])
+        .unwrap());
+    c!("matmul x W^T", &[&[24, 16], &[12, 16]], &|x, _| x[0]
+        .matmul(&x[1].t().unwrap())
+        .unwrap());
     c!("matmul 4d k^T", &[&[1, 4, 8, 6], &[1, 4, 8, 6]], &|x, _| {
         x[0].matmul(&x[1].transpose(2, 3).unwrap()).unwrap()
     });
     c!("sqr/mean/affine/sqrt/div", &[&[1, 8, 16]], &|x, _| {
         let m = x[0].sqr().unwrap().mean_keepdim(D::Minus1).unwrap();
-        x[0].broadcast_div(&m.affine(1.0, 1e-6).unwrap().sqrt().unwrap()).unwrap()
+        x[0].broadcast_div(&m.affine(1.0, 1e-6).unwrap().sqrt().unwrap())
+            .unwrap()
     });
-    c!("broadcast_mul weight", &[&[1, 8, 16], &[16]], &|x, _| x[0].broadcast_mul(&x[1]).unwrap());
-    c!("broadcast_add bias", &[&[1, 8, 16], &[16]], &|x, _| x[0].broadcast_add(&x[1]).unwrap());
-    c!("narrow last dim", &[&[1, 4, 8, 16]], &|x, _| x[0].narrow(D::Minus1, 8, 8).unwrap());
-    c!("narrow dim 1", &[&[1, 12, 16]], &|x, _| x[0].narrow(1, 0, 11).unwrap());
+    c!("broadcast_mul weight", &[&[1, 8, 16], &[16]], &|x, _| x[0]
+        .broadcast_mul(&x[1])
+        .unwrap());
+    c!("broadcast_add bias", &[&[1, 8, 16], &[16]], &|x, _| x[0]
+        .broadcast_add(&x[1])
+        .unwrap());
+    c!("narrow last dim", &[&[1, 4, 8, 16]], &|x, _| x[0]
+        .narrow(D::Minus1, 8, 8)
+        .unwrap());
+    c!("narrow dim 1", &[&[1, 12, 16]], &|x, _| x[0]
+        .narrow(1, 0, 11)
+        .unwrap());
     c!("neg+cat last dim", &[&[1, 4, 8, 16]], &|x, _| {
         let a = x[0].narrow(D::Minus1, 0, 8).unwrap();
         let b = x[0].narrow(D::Minus1, 8, 8).unwrap();
@@ -369,30 +418,77 @@ fn spike_op_differential() {
         x[0].transpose(1, 2).unwrap().contiguous().unwrap()
     });
     c!("transpose+reshape", &[&[1, 4, 8, 6]], &|x, _| {
-        x[0].transpose(1, 2).unwrap().contiguous().unwrap().reshape((1, 8, 24)).unwrap()
+        x[0].transpose(1, 2)
+            .unwrap()
+            .contiguous()
+            .unwrap()
+            .reshape((1, 8, 24))
+            .unwrap()
     });
     c!("gqa expand+reshape", &[&[1, 2, 8, 6]], &|x, _| {
-        x[0].unsqueeze(2).unwrap().expand((1, 2, 4, 8, 6)).unwrap()
-            .reshape((1, 8, 8, 6)).unwrap().contiguous().unwrap()
+        x[0].unsqueeze(2)
+            .unwrap()
+            .expand((1, 2, 4, 8, 6))
+            .unwrap()
+            .reshape((1, 8, 8, 6))
+            .unwrap()
+            .contiguous()
+            .unwrap()
     });
-    c!("expand only (5d)", &[&[1, 2, 1, 8, 6]], &|x, _| x[0].expand((1, 2, 4, 8, 6)).unwrap().contiguous().unwrap());
-    c!("expand4d only", &[&[1, 1, 8, 6]], &|x, _| x[0].expand((1, 4, 8, 6)).unwrap().contiguous().unwrap());
+    c!("expand only (5d)", &[&[1, 2, 1, 8, 6]], &|x, _| x[0]
+        .expand((1, 2, 4, 8, 6))
+        .unwrap()
+        .contiguous()
+        .unwrap());
+    c!("expand4d only", &[&[1, 1, 8, 6]], &|x, _| x[0]
+        .expand((1, 4, 8, 6))
+        .unwrap()
+        .contiguous()
+        .unwrap());
     c!("unsqueeze+expand+contig", &[&[1, 2, 8, 6]], &|x, _| {
-        x[0].unsqueeze(2).unwrap().expand((1, 2, 4, 8, 6)).unwrap().contiguous().unwrap()
+        x[0].unsqueeze(2)
+            .unwrap()
+            .expand((1, 2, 4, 8, 6))
+            .unwrap()
+            .contiguous()
+            .unwrap()
     });
-    c!("broadcast_as 3d", &[&[2, 1, 6]], &|x, _| x[0].broadcast_as((2, 4, 6)).unwrap().contiguous().unwrap());
-    c!("broadcast_as mid-dim", &[&[3, 1, 5, 6]], &|x, _| x[0].broadcast_as((3, 4, 5, 6)).unwrap().contiguous().unwrap());
-    c!("sum dim 2 (5d)", &[&[1, 2, 4, 8, 6]], &|x, _| x[0].sum_keepdim(2).unwrap());
-    c!("sum dim 1 (3d)", &[&[3, 4, 6]], &|x, _| x[0].sum_keepdim(1).unwrap());
-    c!("sum dim 0 (3d)", &[&[3, 4, 6]], &|x, _| x[0].sum_keepdim(0).unwrap());
-    c!("softmax last dim", &[&[1, 4, 8, 8]], &|x, _| candle_nn::ops::softmax(&x[0], D::Minus1).unwrap());
+    c!("broadcast_as 3d", &[&[2, 1, 6]], &|x, _| x[0]
+        .broadcast_as((2, 4, 6))
+        .unwrap()
+        .contiguous()
+        .unwrap());
+    c!("broadcast_as mid-dim", &[&[3, 1, 5, 6]], &|x, _| x[0]
+        .broadcast_as((3, 4, 5, 6))
+        .unwrap()
+        .contiguous()
+        .unwrap());
+    c!("sum dim 2 (5d)", &[&[1, 2, 4, 8, 6]], &|x, _| x[0]
+        .sum_keepdim(2)
+        .unwrap());
+    c!("sum dim 1 (3d)", &[&[3, 4, 6]], &|x, _| x[0]
+        .sum_keepdim(1)
+        .unwrap());
+    c!("sum dim 0 (3d)", &[&[3, 4, 6]], &|x, _| x[0]
+        .sum_keepdim(0)
+        .unwrap());
+    c!("softmax last dim", &[&[1, 4, 8, 8]], &|x, _| {
+        candle_nn::ops::softmax(&x[0], D::Minus1).unwrap()
+    });
     c!("causal mask add", &[&[1, 4, 8, 8]], &|x, dev| {
-        let tril = Tensor::tril2(8, DType::F32, dev).unwrap().broadcast_as((1, 4, 8, 8)).unwrap();
+        let tril = Tensor::tril2(8, DType::F32, dev)
+            .unwrap()
+            .broadcast_as((1, 4, 8, 8))
+            .unwrap();
         let bias = (1.0f64 - &tril).unwrap().affine(-1e9, 0.0).unwrap();
         candle_nn::ops::softmax(&(&x[0] + bias).unwrap(), D::Minus1).unwrap()
     });
-    c!("silu", &[&[8, 16]], &|x, _| candle_nn::ops::silu(&x[0]).unwrap());
-    c!("mul+add", &[&[8, 16], &[8, 16]], &|x, _| ((&x[0] * &x[1]).unwrap() + &x[0]).unwrap());
+    c!("silu", &[&[8, 16]], &|x, _| candle_nn::ops::silu(&x[0])
+        .unwrap());
+    c!("mul+add", &[&[8, 16], &[8, 16]], &|x, _| ((&x[0] * &x[1])
+        .unwrap()
+        + &x[0])
+        .unwrap());
     c!("index_select dim0", &[&[16, 8]], &|x, dev| {
         let idx = Tensor::from_slice(&[3u32, 5, 6, 9, 14, 15], (6,), dev).unwrap();
         x[0].index_select(&idx, 0).unwrap()
@@ -401,22 +497,37 @@ fn spike_op_differential() {
         let idx = Tensor::from_slice(&[3u32, 3, 5, 3, 9, 5], (6,), dev).unwrap();
         x[0].index_select(&idx, 0).unwrap()
     });
-    c!("log_softmax", &[&[12, 32]], &|x, _| candle_nn::ops::log_softmax(&x[0], D::Minus1).unwrap());
+    c!("log_softmax", &[&[12, 32]], &|x, _| {
+        candle_nn::ops::log_softmax(&x[0], D::Minus1).unwrap()
+    });
     c!("gather dim1 (nll)", &[&[12, 32]], &|x, dev| {
         let idx = Tensor::from_slice(
-            &(0..12).map(|i| (i * 5 % 32) as u32).collect::<Vec<_>>(), (12, 1), dev).unwrap();
+            &(0..12).map(|i| (i * 5 % 32) as u32).collect::<Vec<_>>(),
+            (12, 1),
+            dev,
+        )
+        .unwrap();
         x[0].gather(&idx, 1).unwrap()
     });
     c!("cross_entropy", &[&[12, 32]], &|x, dev| {
         let idx = Tensor::from_slice(
-            &(0..12).map(|i| (i * 5 % 32) as u32).collect::<Vec<_>>(), (12,), dev).unwrap();
-        candle_nn::loss::cross_entropy(&x[0], &idx).unwrap().reshape((1,)).unwrap()
+            &(0..12).map(|i| (i * 5 % 32) as u32).collect::<Vec<_>>(),
+            (12,),
+            dev,
+        )
+        .unwrap();
+        candle_nn::loss::cross_entropy(&x[0], &idx)
+            .unwrap()
+            .reshape((1,))
+            .unwrap()
     });
     c!("select then cross_entropy", &[&[12, 32]], &|x, dev| {
         let keep = Tensor::from_slice(&[2u32, 3, 4, 7, 8, 11], (6,), dev).unwrap();
         let idx = Tensor::from_slice(&[1u32, 9, 4, 30, 2, 17], (6,), dev).unwrap();
         candle_nn::loss::cross_entropy(&x[0].index_select(&keep, 0).unwrap(), &idx)
-            .unwrap().reshape((1,)).unwrap()
+            .unwrap()
+            .reshape((1,))
+            .unwrap()
     });
     c!("where_cond", &[&[8, 16], &[8, 16]], &|x, _| {
         let m = x[0].gt(0.0f64).unwrap();
@@ -442,7 +553,8 @@ fn spike_dump_reference() {
             }
         }
         let shape = v.as_tensor().dims().to_vec();
-        v.set(&Tensor::from_vec(vals, shape, &Device::Cpu).unwrap()).unwrap();
+        v.set(&Tensor::from_vec(vals, shape, &Device::Cpu).unwrap())
+            .unwrap();
     }
     let ids = batch(seq, 1).remove(0);
     let loss = loss_of(&model, &cfg, &ids, &Device::Cpu);
@@ -464,8 +576,15 @@ fn spike_dump_reference() {
     }
     out.insert("loss".into(), loss.reshape((1,)).unwrap());
     let idsf: Vec<f32> = ids.iter().map(|x| *x as f32).collect();
-    out.insert("ids".into(), Tensor::from_vec(idsf, (ids.len(),), &Device::Cpu).unwrap());
+    out.insert(
+        "ids".into(),
+        Tensor::from_vec(idsf, (ids.len(),), &Device::Cpu).unwrap(),
+    );
     let path = std::env::var("ONDE_SPIKE_DUMP").unwrap_or("/tmp/lora_ref.safetensors".into());
     candle_core::safetensors::save(&out, &path).unwrap();
-    eprintln!("wrote {} tensors to {path}, loss {}", out.len(), loss.to_scalar::<f32>().unwrap());
+    eprintln!(
+        "wrote {} tensors to {path}, loss {}",
+        out.len(),
+        loss.to_scalar::<f32>().unwrap()
+    );
 }
