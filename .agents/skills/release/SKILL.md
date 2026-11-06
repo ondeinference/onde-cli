@@ -24,15 +24,15 @@ and the distribution skill (channel details) — this skill is the concrete runb
 These files pin the crate version and must all move together:
 
 - `Cargo.toml` — `version = "X.Y.Z"` in `[package]`
-- `pub/onde_cli/pubspec.yaml` — `version: X.Y.Z`
-- `server.json` — three occurrences: top-level `version`, and the npm and NuGet
+- `packaging/pub/onde_cli/pubspec.yaml` — `version: X.Y.Z`
+- `packaging/mcp/server.json` — three occurrences: top-level `version`, and the npm and NuGet
   `packages[].version` entries (search for the old version string to catch all)
 
 `docs/mcp-registry.md` and `.github/workflows/release-mcp-registry.yml` mention
 past versions only as historical examples — do not bump those.
 
 The npm wrapper manifests are NOT bump targets: the committed `package.json` files
-are rewritten at release time by `npm/scripts/render-*.cjs` from the tag.
+are rewritten at release time by `packaging/npm/scripts/render-*.cjs` from the tag.
 
 After editing, run `cargo check --locked` (or let the build update `Cargo.lock`)
 so the lockfile carries the new version, and commit it in the same bump commit.

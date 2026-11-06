@@ -1,4 +1,4 @@
-name: NPM Release
+name: CLI Release NPM
 
 # Dispatched by release-crates.yml once the crate publish succeeds.
 on:
@@ -113,7 +113,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
-          cd npm
+          cd packaging/npm
 
           # Binary name from Cargo.toml
           cargo_bin="onde"
@@ -153,7 +153,7 @@ jobs:
             cargo_bin="${cargo_bin}.exe"
           fi
 
-          cp "../target/${{ matrix.build.TARGET }}/release/${cargo_bin}" "${node_pkg}/bin"
+          cp "../../target/${{ matrix.build.TARGET }}/release/${cargo_bin}" "${node_pkg}/bin"
 
           cd "${node_pkg}"
 
@@ -198,7 +198,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
-          cd npm/onde-cli
+          cd packaging/npm/onde-cli
 
           # Rewrite package.json with the correct release version and
           # matching optionalDependency versions

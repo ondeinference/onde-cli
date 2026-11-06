@@ -1,4 +1,4 @@
-name: Release crates.io
+name: CLI Release Crates.io
 
 # This is the only workflow that reacts to a tag push. It verifies the tag,
 # publishes the crate, and then dispatches every distribution workflow with the
@@ -93,7 +93,7 @@ jobs:
       - name: Ensure the pub.dev wrapper matches the tag
         shell: bash
         run: |
-          pub_version="$(sed -n 's/^version: \(.*\)/\1/p' pub/onde_cli/pubspec.yaml | head -n 1)"
+          pub_version="$(sed -n 's/^version: \(.*\)/\1/p' packaging/pub/onde_cli/pubspec.yaml | head -n 1)"
           if [ "$pub_version" != "${{ steps.release.outputs.version }}" ]; then
             echo "::error::pubspec.yaml is ${pub_version} but the tag is ${{ steps.release.outputs.version }}"
             exit 1

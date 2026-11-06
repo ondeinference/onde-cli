@@ -1,4 +1,4 @@
-name: CI
+name: Tests
 
 on:
   push:
@@ -121,7 +121,7 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Build .NET tool launcher
-        run: dotnet build nuget/onde-cli/Onde.Cli.csproj --configuration Release
+        run: dotnet build packaging/nuget/onde-cli/Onde.Cli.csproj --configuration Release
 
   dart-package:
     name: Dart pub package check
@@ -134,11 +134,11 @@ jobs:
         uses: dart-lang/setup-dart@v1
 
       - name: Get package dependencies
-        working-directory: pub/onde_cli
+        working-directory: packaging/pub/onde_cli
         run: dart pub get
 
       - name: Analyze Dart package
-        working-directory: pub/onde_cli
+        working-directory: packaging/pub/onde_cli
         run: dart analyze
 
   build:

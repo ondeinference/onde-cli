@@ -36,24 +36,24 @@ jobs:
       - name: Check the server name is consistent across packages
         shell: bash
         run: |
-          server_name="$(jq -r '.name' server.json)"
+          server_name="$(jq -r '.name' packaging/mcp/server.json)"
           echo "Server name: ${server_name}"
 
           # npm proves ownership through `mcpName` in the published package.json,
           # rendered at release time from this template.
-          grep -q "\"mcpName\": \"${server_name}\"" npm/package-main.json.tmpl
+          grep -q "\"mcpName\": \"${server_name}\"" packaging/npm/package-main.json.tmpl
 
           # NuGet proves ownership through an `mcp-name:` marker in the package README.
-          grep -q "mcp-name: ${server_name}" nuget/onde-cli/README.md
+          grep -q "mcp-name: ${server_name}" packaging/nuget/onde-cli/README.md
 
       - name: Set the version in server.json
         shell: bash
         run: |
           jq --arg v "${RELEASE_VERSION}" \
             '.version = $v | .packages |= map(.version = $v)' \
-            server.json > server.tmp
-          mv server.tmp server.json
-          cat server.json
+            packaging/mcp/server.json > server.tmp
+          mv server.tmp packaging/mcp/server.json
+          cat packaging/mcp/server.json
 
       - name: Verify the published packages carry the ownership marker
         shell: bash
@@ -62,7 +62,7 @@ jobs:
           # listed package and looking for a marker naming this server. Checking
           # the sources isn't enough: a package published before the marker
           # landed will still be missing it. Both comparisons are case-sensitive.
-          server_name="$(jq -r '.name' server.json)"
+          server_name="$(jq -r '.name' packaging/mcp/server.json)"
 
           # npm is queryable within seconds of publishing, but the npm release
           # workflow may still be building its platform packages when this runs.
@@ -121,10 +121,11 @@ jobs:
 
       - name: Publish
         shell: bash
-        run: ./mcp-publisher publish
+        working-directory: packaging/mcp
+        run: ../../mcp-publisher publish
 
       - name: Verify the server is listed
         shell: bash
         run: |
-          server_name="$(jq -r '.name' server.json)"
+          server_name="$(jq -r '.name' packaging/mcp/server.json)"
           curl -fsSL "https://registry.modelcontextprotocol.io/v0.1/servers?search=${server_name}" | jq .
