@@ -1,0 +1,9 @@
+[package]
+name = "mlx-spike"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+mlx-rs = "0.34.0"
+serde_json = "1"
+tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
