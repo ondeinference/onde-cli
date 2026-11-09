@@ -2174,11 +2174,24 @@ fn handle_key_finetune(
                             .to_string()
                     });
                 let output_path = run_dir.join(format!("{gguf_name}-q8_0.gguf"));
+                let base_model_repo = app
+                    .current_project
+                    .as_ref()
+                    .map(|p| p.base_model_id.clone())
+                    .filter(|id| !id.is_empty());
 
                 let gguf_config = crate::gguf::GgufConfig {
                     model_dir,
                     output_path,
                     dtype: crate::gguf::GgufDtype::Q8_0,
+                    name: gguf_name.clone(),
+                    description: None,
+                    license: None,
+                    base_model_repo: base_model_repo.clone(),
+                    base_model_name: base_model_repo
+                        .as_deref()
+                        .and_then(|repo| repo.split('/').next_back())
+                        .map(str::to_string),
                 };
 
                 app.gguf_running = true;
