@@ -1,3 +1,19 @@
+## 0.5.1
+
+- Launcher tracks CLI 0.5.1.
+
+## 0.5.0
+
+- Launcher tracks CLI 0.5.0.
+
+## 0.4.3
+
+- Launcher tracks CLI 0.4.3.
+
+## 0.4.2
+
+- Launcher tracks CLI 0.4.2.
+
 ## 0.4.1
 
 - Launcher tracks CLI 0.4.1, which lists the MCP server on the MCP Registry.

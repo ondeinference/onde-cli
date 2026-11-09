@@ -1,17 +1,24 @@
+# Publishes to pub.dev with automated publishing (OIDC), so there is no stored
+# credential to expire. The package's admin page on pub.dev must enable
+# publishing from GitHub Actions for this repository with the tag pattern
+# v{{version}} and "workflow_dispatch" events turned on, because this workflow
+# is dispatched by release-github.yml with the release tag as its ref and
+# input. If pub.dev refuses a dispatched run, publish that version by hand
+# (dart pub publish in packaging/pub/onde_cli).
+
 name: CLI Release pub.dev
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.4.0)"
+        description: "Release tag (e.g. v0.5.0)"
         required: true
 
 permissions:
   contents: read
 
 env:
-  CARGO_TERM_COLOR: always
   PUB_PACKAGE_NAME: onde_cli
 
 jobs:
@@ -22,36 +29,25 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.inputs.tag }}
 
       - name: Set the release version
         shell: bash
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            release_version="${GITHUB_REF_NAME#v}"
-          else
-            release_version="${{ github.event.inputs.tag }}"
-            release_version="${release_version#v}"
-          fi
-          echo "RELEASE_VERSION=${release_version}" >> "$GITHUB_ENV"
+          tag="${{ github.event.inputs.tag }}"
+          echo "RELEASE_VERSION=${tag#v}" >> "$GITHUB_ENV"
 
       - name: Setup Dart SDK
         uses: dart-lang/setup-dart@v1
 
-      - name: Sync package version
+      - name: Pubspec version matches the tag
         shell: bash
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import os
-          release_version = os.environ['RELEASE_VERSION']
-          pubspec = Path('packaging/pub/onde_cli/pubspec.yaml')
-          lines = pubspec.read_text().splitlines()
-          for index, line in enumerate(lines):
-              if line.startswith('version: '):
-                  lines[index] = f'version: {release_version}'
-          pubspec.write_text('\n'.join(lines) + '\n')
-          PY
+          pub_version="$(sed -n 's/^version: \(.*\)/\1/p' packaging/pub/onde_cli/pubspec.yaml | head -n 1)"
+          if [ "${pub_version}" != "${RELEASE_VERSION}" ]; then
+            echo "::error::pubspec.yaml is ${pub_version} but the tag is ${RELEASE_VERSION}"
+            exit 1
+          fi
 
       - name: Get package dependencies
         working-directory: packaging/pub/onde_cli
@@ -61,6 +57,8 @@ jobs:
         working-directory: packaging/pub/onde_cli
         run: dart analyze
 
+      # pub.dev treats a CHANGELOG.md that does not mention the version as a
+      # validation warning, and the dry-run exits non-zero on warnings.
       - name: Dry-run publish
         working-directory: packaging/pub/onde_cli
         run: dart pub publish --dry-run
@@ -69,59 +67,56 @@ jobs:
     name: Publish to pub.dev
     runs-on: ubuntu-latest
     needs: verify-package
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.inputs.tag }}
 
       - name: Set the release version
         shell: bash
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            release_version="${GITHUB_REF_NAME#v}"
-          else
-            release_version="${{ github.event.inputs.tag }}"
-            release_version="${release_version#v}"
-          fi
-          echo "RELEASE_VERSION=${release_version}" >> "$GITHUB_ENV"
+          tag="${{ github.event.inputs.tag }}"
+          echo "RELEASE_VERSION=${tag#v}" >> "$GITHUB_ENV"
 
+      # setup-dart exchanges the workflow's OIDC token for a pub.dev token when
+      # id-token: write is granted.
       - name: Setup Dart SDK
         uses: dart-lang/setup-dart@v1
-
-      - name: Sync package version
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import os
-          release_version = os.environ['RELEASE_VERSION']
-          pubspec = Path('packaging/pub/onde_cli/pubspec.yaml')
-          lines = pubspec.read_text().splitlines()
-          for index, line in enumerate(lines):
-              if line.startswith('version: '):
-                  lines[index] = f'version: {release_version}'
-          pubspec.write_text('\n'.join(lines) + '\n')
-          PY
 
       - name: Check whether release already exists on pub.dev
         id: pub-check
         shell: bash
         run: |
-          package_url="https://pub.dev/api/packages/${PUB_PACKAGE_NAME}"
-          if curl -fsS "${package_url}" | grep -F '"version":"'"${RELEASE_VERSION}"'"' >/dev/null; then
-            echo "${PUB_PACKAGE_NAME} ${RELEASE_VERSION} already exists on pub.dev, skipping publish"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          index=$(mktemp)
+          STATUS=$(curl -sS -o "${index}" -w '%{http_code}' \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            "https://pub.dev/api/packages/${PUB_PACKAGE_NAME}")
 
-      - name: Set up pub.dev credentials
-        if: steps.pub-check.outputs.exists != 'true'
-        shell: bash
-        run: |
-          mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/dart"
-          echo '${{ secrets.PUB_CREDENTIALS }}' > "${XDG_CONFIG_HOME:-$HOME/.config}/dart/pub-credentials.json"
+          case "$STATUS" in
+            200)
+              # Dots in the version are escaped so 0.5.0 cannot match 0x5y0, and the
+              # optional spaces keep this working if the API ever pretty-prints.
+              escaped_version="${RELEASE_VERSION//./\\.}"
+              if grep -E "\"version\"[[:space:]]*:[[:space:]]*\"${escaped_version}\"" "${index}" >/dev/null; then
+                echo "${PUB_PACKAGE_NAME} ${RELEASE_VERSION} already exists on pub.dev, skipping publish"
+                echo "exists=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "exists=false" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            404)
+              echo "${PUB_PACKAGE_NAME} is not on pub.dev yet, publishing its first version"
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unexpected ${STATUS} from pub.dev while checking ${PUB_PACKAGE_NAME} ${RELEASE_VERSION}" >&2
+              exit 1
+              ;;
+          esac
 
       - name: Publish package
         if: steps.pub-check.outputs.exists != 'true'

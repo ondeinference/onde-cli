@@ -25,6 +25,9 @@ These files pin the crate version and must all move together:
 
 - `Cargo.toml` — `version = "X.Y.Z"` in `[package]`
 - `packaging/pub/onde_cli/pubspec.yaml` — `version: X.Y.Z`
+- `packaging/pub/onde_cli/CHANGELOG.md` — a `## X.Y.Z` entry at the top. pub.dev's dry-run
+  treats a changelog that doesn't mention the version as a warning and exits non-zero, which
+  stopped the pub.dev releases for v0.4.2 to v0.5.0.
 - `packaging/mcp/server.json` — three occurrences: top-level `version`, and the npm and NuGet
   `packages[].version` entries (search for the old version string to catch all)
 
@@ -123,7 +126,34 @@ Pushing `vX.Y.Z` triggers a three-level chain. There is no separate "publish" st
 2. `release-github.yml` (CLI Release GitHub) then dispatches **Homebrew, pub.dev, Scoop and winget**
    once the release assets exist. A failed Scoop or winget dispatch only logs a warning
    (`core.warning`), so it is easy to miss.
-3. `release-nuget.yml` (CLI Release NuGet) then dispatches the **MCP Registry Release**.
+3. `release-nuget.yml` (CLI Release NuGet) then dispatches the **MCP Registry Release**, which
+   waits for the npm and NuGet packages at this version. A failed npm or NuGet publish
+   therefore also fails the MCP Registry run.
+
+pub.dev depends on a setting. Its automated publishing only publishes from the events enabled in
+the package's admin page. `release-pub.yml` is dispatched, so "Enable publishing from
+`workflow_dispatch` events" has to be on there. pub.dev's own docs only describe publishing from a
+tag push, so how it treats a dispatched run is confirmed only by a real release. If the publish
+step is refused, publish that version by hand (`dart pub publish` in `packaging/pub/onde_cli`).
+
+## Publishing credentials
+
+None of the registries use a stored token for the release workflows. A token that expires
+shows up at release time as a failed publish, so don't add one back.
+
+| Channel | Auth | What has to exist |
+|---|---|---|
+| npm | Trusted publishing | A trusted publisher on npmjs.com for each of the 7 packages (`@ondeinference/cli` and `-darwin-arm64`, `-darwin-x64`, `-linux-arm64`, `-linux-x64`, `-windows-arm64`, `-windows-x64`), naming `ondeinference/onde-cli` and `release-npm.yml`. Needs npm 11.5.1 or later and Node 22.14 or later, which the workflow sets up. |
+| NuGet | Trusted publishing | A policy on nuget.org naming `release-nuget.yml`, and the `NUGET_USER` repo secret (the profile name, not the email). |
+| pub.dev | Automated publishing | Publishing from GitHub Actions enabled in the package's admin page for this repo, tag pattern `v{{version}}`, `workflow_dispatch` events on. Leave "Require GitHub Actions environment" off, since the workflow uses none. |
+| crates.io, PyPI | See `.github/workflows/release-crates.yml` and `release-pypi.yml` | |
+
+The policy or trusted publisher names the workflow file that contains the publish job, not
+the orchestrator that dispatches it. A new package needs its entry before its first publish.
+npm shows a new entry as "Pending validation" until one publish succeeds, with a deadline
+printed on the page; a publish through the workflow validates it.
+
+Don't change a workflow file name without updating those entries.
 
 Watch it land:
 
@@ -145,8 +175,12 @@ After the pipeline finishes, spot-check the fan-out (all idempotent, safe to re-
 - GitHub Release: `gh release view vX.Y.Z`
 - npm: `npm view @ondeinference/cli version`
 - PyPI: `https://pypi.org/pypi/onde-cli/json` → `info.version`
-- NuGet: `https://api.nuget.org/v3-flatcontainer/onde.cli/index.json`
-- pub.dev: `https://pub.dev/api/packages/onde_cli` → `latest.version`
+- NuGet: `https://api.nuget.org/v3-flatcontainer/onde.cli/index.json`. `dotnet nuget push` printing
+  "Your package was pushed" means nuget.org accepted it, not that it is listed. The package is
+  large, so validation can take a while. If the version is still missing well past 30 minutes,
+  check the package's Manage page on nuget.org and your email for a failed validation.
+- pub.dev: `https://pub.dev/api/packages/onde_cli` → `latest.version` (new versions can take
+  up to 10 minutes to appear after the upload is accepted)
 - MCP Registry: the `MCP Registry Release` run is green
 - Scoop / winget: `gh run list --workflow release-scoop.yml` / `--workflow release-winget.yml`
   show a run for the tag (they can silently not dispatch). winget lands as a PR to
@@ -166,3 +200,22 @@ After the pipeline finishes, spot-check the fan-out (all idempotent, safe to re-
   paths the newer branch tracks. Fetch first, move the leftovers aside, don't delete.
 - Pushing with the wrong `gh` account active — the push works, but PR/issue
   actions afterwards get attributed to the wrong identity.
+- A stored registry token expiring. NuGet (`403 The specified API key has expired`) and npm
+  (`E404 PUT` on every platform package, because npm answers a bad credential with a 404) both
+  failed this way. Both now use trusted publishing. If either error comes back, check the
+  trusted publisher entries before looking for a token.
+- pub.dev dry-run failing on `CHANGELOG.md doesn't mention current version`. The changelog
+  entry is a bump surface; add it before tagging.
+- The release-github.yml dispatch passes the tag as the ref, so a workflow run for a tag uses the
+  workflow file from that tagged commit. Fixing a workflow doesn't help a tag that already
+  exists. Start a fresh run from the fixed branch instead:
+  `gh workflow run <file> --ref <branch> -f tag=<tag>`. pub.dev is the exception, because a run
+  from a branch ref may not match the tag pattern, so publish that version by hand
+  (`dart pub publish` in `packaging/pub/onde_cli`) or cut the next tag.
+- pub.dev publishing was moved to tag pushes for a while (`workflow_dispatch` was off in its
+  settings), which took it out of the fan-out. It is dispatched again, which needs
+  `workflow_dispatch` on in the pub.dev settings.
+- A failed npm release leaves the MCP Registry run failing with "still not on npm after 10
+  minutes". Fix npm, publish it, then re-dispatch the MCP Registry release for the tag.
+- Re-running pub.dev for an old tag. It checks out that tag, so it uses that tag's pubspec and
+  changelog and fails if they predate the changelog rule.
