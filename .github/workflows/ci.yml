@@ -31,39 +31,41 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/development' }}
 
-# build.rs exits when these are unset. Placeholders let fork PRs, which get no
-# secrets, still type-check. Nothing built here is shipped.
 env:
   CARGO_TERM_COLOR: always
-  ONDE_APP_ID: ${{ secrets.ONDE_APP_ID || 'ci-placeholder' }}
-  ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET || 'ci-placeholder' }}
-  GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY || 'ci-placeholder' }}
-  GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET || 'ci-placeholder' }}
-  HF_TOKEN: ${{ secrets.HF_TOKEN || 'ci-placeholder' }}
 
 jobs:
   changes:
     name: Changes
     runs-on: ubuntu-latest
     outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-      dotnet: ${{ steps.filter.outputs.dotnet }}
-      dart: ${{ steps.filter.outputs.dart }}
-      workflows: ${{ steps.filter.outputs.workflows }}
+      rust: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust }}
+      dotnet: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.dotnet }}
+      dart: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.dart }}
+      workflows: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.workflows }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
+      # paths-filter only understands push and pull_request. A manual run has
+      # no diff to filter, so every job runs.
       - name: Filter changed paths
         id: filter
+        if: github.event_name != 'workflow_dispatch'
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
             rust:
               - "src/**"
+              - "tests/**"
+              - "benches/**"
+              - "examples/**"
               - "build.rs"
               - "Cargo.*"
+              - ".cargo/**"
               - "rust-toolchain.toml"
+              - "rustfmt.toml"
+              - "clippy.toml"
               - ".github/workflows/ci.yml"
             dotnet:
               - "packaging/nuget/**"
@@ -79,6 +81,15 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    # build.rs exits when these are unset. Placeholders let fork PRs, which get
+    # no secrets, still type-check. Scoped to the jobs that compile the crate so
+    # third-party actions never see the real values.
+    env:
+      ONDE_APP_ID: ${{ secrets.ONDE_APP_ID || 'ci-placeholder' }}
+      ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET || 'ci-placeholder' }}
+      GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY || 'ci-placeholder' }}
+      GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET || 'ci-placeholder' }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN || 'ci-placeholder' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -110,6 +121,15 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: macos-26
+    # build.rs exits when these are unset. Placeholders let fork PRs, which get
+    # no secrets, still type-check. Scoped to the jobs that compile the crate so
+    # third-party actions never see the real values.
+    env:
+      ONDE_APP_ID: ${{ secrets.ONDE_APP_ID || 'ci-placeholder' }}
+      ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET || 'ci-placeholder' }}
+      GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY || 'ci-placeholder' }}
+      GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET || 'ci-placeholder' }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN || 'ci-placeholder' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
