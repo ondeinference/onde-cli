@@ -2149,7 +2149,9 @@ fn handle_key_finetune(
                 });
                 return;
             }
-            (Char('g'), KeyModifiers::NONE) if app.merged_model_dir.is_some() => {
+            (Char(key @ ('g' | 'G')), KeyModifiers::NONE | KeyModifiers::SHIFT)
+                if app.merged_model_dir.is_some() =>
+            {
                 // Start GGUF export from merged model
                 let model_dir = app.merged_model_dir.clone().unwrap_or_default();
                 // Derive GGUF filename from the merged dir name for traceability.
@@ -2173,7 +2175,13 @@ fn handle_key_finetune(
                             .unwrap_or("model-finetuned")
                             .to_string()
                     });
-                let output_path = run_dir.join(format!("{gguf_name}-q8_0.gguf"));
+                // `g` exports Q8_0, `G` (Shift+g) exports Q4_K_M.
+                let (dtype, dtype_suffix) = if key == 'G' {
+                    (crate::gguf::GgufDtype::Q4KM, "q4_k_m")
+                } else {
+                    (crate::gguf::GgufDtype::Q8_0, "q8_0")
+                };
+                let output_path = run_dir.join(format!("{gguf_name}-{dtype_suffix}.gguf"));
                 let base_model_repo = app
                     .current_project
                     .as_ref()
@@ -2183,7 +2191,7 @@ fn handle_key_finetune(
                 let gguf_config = crate::gguf::GgufConfig {
                     model_dir,
                     output_path,
-                    dtype: crate::gguf::GgufDtype::Q8_0,
+                    dtype,
                     name: gguf_name.clone(),
                     description: None,
                     license: None,

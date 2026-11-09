@@ -22,6 +22,8 @@ use half::f16;
 pub enum GgufDtype {
     F16,
     Q8_0,
+    /// llama.cpp's `Q4_K_M` mix: Q4_K weights, Q6_K for the sensitive tensors.
+    Q4KM,
 }
 
 /// Configuration for a GGUF export run.
@@ -229,6 +231,13 @@ const QWEN_CHATML_TEMPLATE: &str = concat!(
 const GGUF_TYPE_F32: u32 = 0;
 const GGUF_TYPE_F16: u32 = 1;
 const GGUF_TYPE_Q8_0: u32 = 8;
+const GGUF_TYPE_Q4_K: u32 = 12;
+const GGUF_TYPE_Q6_K: u32 = 14;
+
+/// Elements per k-quant super-block.
+const QK_K: usize = 256;
+const Q4_K_BLOCK_BYTES: usize = 144;
+const Q6_K_BLOCK_BYTES: usize = 210;
 
 // GGUF metadata value type IDs
 const GGUF_META_U32: u32 = 4;
@@ -373,6 +382,8 @@ fn tensor_data_size(num_elements: usize, gguf_type: u32) -> usize {
         GGUF_TYPE_F32 => num_elements * 4,
         GGUF_TYPE_F16 => num_elements * 2,
         GGUF_TYPE_Q8_0 => num_elements.div_ceil(32) * 34,
+        GGUF_TYPE_Q4_K => num_elements / QK_K * Q4_K_BLOCK_BYTES,
+        GGUF_TYPE_Q6_K => num_elements / QK_K * Q6_K_BLOCK_BYTES,
         _ => num_elements * 4,
     }
 }
@@ -381,10 +392,64 @@ fn tensor_data_size(num_elements: usize, gguf_type: u32) -> usize {
 // Private — determine GGUF type for a tensor
 // ---------------------------------------------------------------------------
 
-fn choose_gguf_type(gguf_name: &str, ndim: usize, dtype: &GgufDtype) -> u32 {
+/// Where a tensor sits in the model, for per-tensor quantization choices.
+struct TensorPlacement {
+    /// Block index parsed from `blk.{i}.`, if the tensor belongs to a layer.
+    layer: Option<usize>,
+    num_layers: usize,
+    /// True when the output head is the token embedding (no `output.weight`).
+    tied_embeddings: bool,
+}
+
+/// llama.cpp's `use_more_bits`: the first and last eighth of the layers, and
+/// every third layer in between, get the higher-precision type.
+fn use_more_bits(layer: usize, num_layers: usize) -> bool {
+    layer < num_layers / 8 || layer >= 7 * num_layers / 8 || (layer - num_layers / 8) % 3 == 2
+}
+
+fn layer_index(gguf_name: &str) -> Option<usize> {
+    gguf_name
+        .strip_prefix("blk.")?
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
+}
+
+fn choose_gguf_type(
+    gguf_name: &str,
+    dims: &[u64],
+    dtype: &GgufDtype,
+    placement: &TensorPlacement,
+) -> u32 {
     // 1-D tensors (norms, biases) → always F32
-    if ndim <= 1 {
+    if dims.len() <= 1 {
         return GGUF_TYPE_F32;
+    }
+
+    if matches!(dtype, GgufDtype::Q4KM) {
+        // dims are innermost-first, so dims[0] is the row length. K-quants
+        // need whole 256-element blocks per row.
+        let row_len = dims.first().copied().unwrap_or(0) as usize;
+        if !row_len.is_multiple_of(QK_K) {
+            return GGUF_TYPE_Q8_0;
+        }
+        let more_bits = placement
+            .layer
+            .is_some_and(|layer| use_more_bits(layer, placement.num_layers));
+        let high_precision = match gguf_name {
+            "output.weight" => true,
+            "token_embd.weight" => placement.tied_embeddings,
+            name if name.ends_with(".attn_v.weight") || name.ends_with(".ffn_down.weight") => {
+                more_bits
+            }
+            _ => false,
+        };
+        return if high_precision {
+            GGUF_TYPE_Q6_K
+        } else {
+            GGUF_TYPE_Q4_K
+        };
     }
 
     // Embedding and output head → always F16
@@ -396,6 +461,7 @@ fn choose_gguf_type(gguf_name: &str, ndim: usize, dtype: &GgufDtype) -> u32 {
     match dtype {
         GgufDtype::F16 => GGUF_TYPE_F16,
         GgufDtype::Q8_0 => GGUF_TYPE_Q8_0,
+        GgufDtype::Q4KM => GGUF_TYPE_Q4_K,
     }
 }
 
@@ -448,6 +514,31 @@ fn write_tensor_q8_0(w: &mut impl Write, data: &[f32]) -> std::io::Result<()> {
             w.write_all(&[q as u8])?;
         }
     }
+    Ok(())
+}
+
+/// Quantize a row-major `[rows, row_len]` matrix with candle's llama.cpp-ported
+/// k-quant kernels and write the raw blocks.
+fn write_tensor_kquant(
+    w: &mut impl Write,
+    data: Vec<f32>,
+    row_len: usize,
+    gguf_type: u32,
+) -> Result<()> {
+    use candle_core::quantized::{GgmlDType, QTensor};
+
+    let ggml_type = match gguf_type {
+        GGUF_TYPE_Q4_K => GgmlDType::Q4K,
+        GGUF_TYPE_Q6_K => GgmlDType::Q6K,
+        other => anyhow::bail!("not a k-quant GGUF type: {other}"),
+    };
+    let rows = data.len() / row_len;
+    let tensor = candle_core::Tensor::from_vec(data, (rows, row_len), &Device::Cpu)
+        .context("failed to build tensor for quantization")?;
+    let quantized = QTensor::quantize(&tensor, ggml_type).context("k-quant quantization failed")?;
+    let bytes = quantized.data().context("failed to read quantized bytes")?;
+    w.write_all(&bytes)
+        .context("failed to write quantized tensor")?;
     Ok(())
 }
 
@@ -656,6 +747,7 @@ fn run_gguf_export(
     // 4. Build tensor entries with name mapping
     // -----------------------------------------------------------------------
     let mut entries: Vec<TensorEntry> = Vec::new();
+    let tied_embeddings = !tensor_list.iter().any(|(name, _)| name == "lm_head.weight");
     for (hf_name, tensor_view) in &tensor_list {
         let gguf_name = match map_tensor_name(hf_name) {
             Some(n) => n,
@@ -671,7 +763,12 @@ fn run_gguf_export(
         // as [out, in] this yields ne = [in, out], matching what mistral.rs /
         // candle expect after their `dimensions.reverse()`.
         let dims: Vec<u64> = shape.iter().rev().map(|&d| d as u64).collect();
-        let gguf_type = choose_gguf_type(&gguf_name, ndim, &config.dtype);
+        let placement = TensorPlacement {
+            layer: layer_index(&gguf_name),
+            num_layers: model_cfg.num_hidden_layers,
+            tied_embeddings,
+        };
+        let gguf_type = choose_gguf_type(&gguf_name, &dims, &config.dtype, &placement);
         let data_size = tensor_data_size(num_elements, gguf_type);
 
         entries.push(TensorEntry {
@@ -689,11 +786,19 @@ fn run_gguf_export(
     // Handle tie_word_embeddings: if lm_head.weight is missing, duplicate
     // embed_tokens as output.weight
     let has_output = entries.iter().any(|e| e.gguf_name == "output.weight");
+    // llama.cpp's Q4_K_M files leave `output.weight` out and let the loader reuse
+    // `token_embd.weight`, which saves a second copy of the largest tensor.
     if !has_output
         && model_cfg.tie_word_embeddings
+        && !matches!(config.dtype, GgufDtype::Q4KM)
         && let Some(embd) = entries.iter().find(|e| e.gguf_name == "token_embd.weight")
     {
-        let gguf_type = choose_gguf_type("output.weight", embd.ndim, &config.dtype);
+        let placement = TensorPlacement {
+            layer: None,
+            num_layers: model_cfg.num_hidden_layers,
+            tied_embeddings,
+        };
+        let gguf_type = choose_gguf_type("output.weight", &embd.dims, &config.dtype, &placement);
         let data_size = tensor_data_size(embd.num_elements, gguf_type);
         entries.push(TensorEntry {
             gguf_name: "output.weight".to_string(),
@@ -776,6 +881,7 @@ fn run_gguf_export(
     let file_type_val: u32 = match config.dtype {
         GgufDtype::F16 => 1,
         GgufDtype::Q8_0 => 7,
+        GgufDtype::Q4KM => 15,
     };
 
     // GGUF architecture string.
@@ -974,6 +1080,10 @@ fn run_gguf_export(
             GGUF_TYPE_F32 => write_tensor_f32(&mut w, &data)?,
             GGUF_TYPE_F16 => write_tensor_f16(&mut w, &data)?,
             GGUF_TYPE_Q8_0 => write_tensor_q8_0(&mut w, &data)?,
+            GGUF_TYPE_Q4_K | GGUF_TYPE_Q6_K => {
+                let row_len = entry.dims.first().copied().unwrap_or(1) as usize;
+                write_tensor_kquant(&mut w, data, row_len, entry.gguf_type)?
+            }
             _ => write_tensor_f32(&mut w, &data)?,
         }
 
@@ -1006,6 +1116,101 @@ fn run_gguf_export(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deterministic pseudo-random values in roughly [-1, 1) (no `rand` dependency).
+    fn pseudo_random_matrix(rows: usize, cols: usize) -> Vec<f32> {
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        (0..rows * cols)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((state >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    fn kquant_roundtrip_rmse(gguf_type: u32) -> f32 {
+        let (rows, cols) = (8, 512);
+        let data = pseudo_random_matrix(rows, cols);
+        let mut bytes = Vec::new();
+        write_tensor_kquant(&mut bytes, data.clone(), cols, gguf_type).unwrap();
+        assert_eq!(bytes.len(), tensor_data_size(rows * cols, gguf_type));
+
+        let ggml_type = if gguf_type == GGUF_TYPE_Q4_K {
+            candle_core::quantized::GgmlDType::Q4K
+        } else {
+            candle_core::quantized::GgmlDType::Q6K
+        };
+        let tensor =
+            candle_core::Tensor::from_vec(data.clone(), (rows, cols), &Device::Cpu).unwrap();
+        let restored = candle_core::quantized::QTensor::quantize(&tensor, ggml_type)
+            .unwrap()
+            .dequantize(&Device::Cpu)
+            .unwrap()
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        let squared_error: f32 = data
+            .iter()
+            .zip(&restored)
+            .map(|(a, b)| (a - b) * (a - b))
+            .sum();
+        (squared_error / data.len() as f32).sqrt()
+    }
+
+    #[test]
+    fn q4_k_roundtrip_error_is_small() {
+        // Uniform [-1, 1) data: a 4-bit grid per 32-element sub-block gives an RMSE near 0.04.
+        let rmse = kquant_roundtrip_rmse(GGUF_TYPE_Q4_K);
+        assert!(rmse < 0.06, "Q4_K RMSE too high: {rmse}");
+    }
+
+    #[test]
+    fn q6_k_roundtrip_error_is_small() {
+        let rmse = kquant_roundtrip_rmse(GGUF_TYPE_Q6_K);
+        assert!(rmse < 0.01, "Q6_K RMSE too high: {rmse}");
+    }
+
+    #[test]
+    fn k_quant_block_sizes() {
+        assert_eq!(tensor_data_size(256, GGUF_TYPE_Q4_K), 144);
+        assert_eq!(tensor_data_size(256 * 3, GGUF_TYPE_Q6_K), 210 * 3);
+    }
+
+    #[test]
+    fn q4_k_m_mixes_types_like_llama_cpp() {
+        let num_layers = 28;
+        let pick = |name: &str, dims: &[u64], tied: bool| {
+            let placement = TensorPlacement {
+                layer: layer_index(name),
+                num_layers,
+                tied_embeddings: tied,
+            };
+            choose_gguf_type(name, dims, &GgufDtype::Q4KM, &placement)
+        };
+        let square = [1536u64, 1536];
+        // Layers 0..3 and 24..28 are "more bits"; 5, 8, 11, ... follow the every-third rule.
+        assert_eq!(pick("blk.0.attn_v.weight", &square, true), GGUF_TYPE_Q6_K);
+        assert_eq!(pick("blk.3.attn_v.weight", &square, true), GGUF_TYPE_Q4_K);
+        assert_eq!(pick("blk.5.ffn_down.weight", &square, true), GGUF_TYPE_Q6_K);
+        assert_eq!(
+            pick("blk.27.ffn_down.weight", &square, true),
+            GGUF_TYPE_Q6_K
+        );
+        assert_eq!(pick("blk.4.attn_q.weight", &square, true), GGUF_TYPE_Q4_K);
+        assert_eq!(pick("blk.0.ffn_up.weight", &square, true), GGUF_TYPE_Q4_K);
+        assert_eq!(pick("token_embd.weight", &square, true), GGUF_TYPE_Q6_K);
+        assert_eq!(pick("token_embd.weight", &square, false), GGUF_TYPE_Q4_K);
+        assert_eq!(pick("output.weight", &square, false), GGUF_TYPE_Q6_K);
+        assert_eq!(pick("blk.0.attn_norm.weight", &[1536], true), GGUF_TYPE_F32);
+        // Rows that are not a multiple of 256 fall back to Q8_0.
+        assert_eq!(
+            pick("blk.0.attn_q.weight", &[1000, 64], true),
+            GGUF_TYPE_Q8_0
+        );
+    }
 
     /// Resolve the locally cached merged Qwen3-0.6B model directory, if present.
     /// Returns `None` so the heavy integration test can be skipped on machines
@@ -1091,8 +1296,14 @@ mod tests {
     #[test]
     #[ignore = "heavy: fine-tunes, merges, exports ~1GB GGUF and runs it"]
     fn finetune_merge_export_run() {
-        let Some(base_dir) = base_qwen3_dir() else {
-            eprintln!("base Qwen3-0.6B not found locally; skipping");
+        // `ONDE_TEST_BASE_DIR` points at any local safetensors snapshot, so the
+        // pipeline can run against bases other than the cached Qwen3-0.6B.
+        let Some(base_dir) = std::env::var("ONDE_TEST_BASE_DIR")
+            .ok()
+            .map(PathBuf::from)
+            .or_else(base_qwen3_dir)
+        else {
+            eprintln!("base model not found locally; skipping");
             return;
         };
         let data_path = match std::env::var("ONDE_TEST_DATA_PATH") {
@@ -1106,7 +1317,11 @@ mod tests {
             return;
         }
 
-        let work = std::env::temp_dir().join("onde-e2e-test");
+        // `ONDE_TEST_WORK_DIR` keeps the adapter, merged model and GGUF (for
+        // example under a project's `runs/`); it is wiped before each run.
+        let work = std::env::var("ONDE_TEST_WORK_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| std::env::temp_dir().join("onde-e2e-test"));
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(&work).unwrap();
 
@@ -1193,14 +1408,19 @@ mod tests {
         });
         assert!(merged_ok, "merge did not complete");
 
-        // 3. Export GGUF (the dtype the CLI ships).
-        let gguf_path = work.join("finetuned-q8_0.gguf");
+        // 3. Export GGUF. `ONDE_TEST_DTYPE` selects f16, q8_0 (default) or q4_k_m.
+        let (dtype, dtype_label) = match std::env::var("ONDE_TEST_DTYPE").as_deref() {
+            Ok("f16") => (GgufDtype::F16, "f16"),
+            Ok("q4_k_m") => (GgufDtype::Q4KM, "q4_k_m"),
+            _ => (GgufDtype::Q8_0, "q8_0"),
+        };
+        let gguf_path = work.join(format!("finetuned-{dtype_label}.gguf"));
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         run_gguf_export(
             &GgufConfig {
                 model_dir: merged_dir,
                 output_path: gguf_path.clone(),
-                dtype: GgufDtype::Q8_0,
+                dtype,
                 ..GgufConfig::named("finetuned")
             },
             &tx,
@@ -1249,15 +1469,16 @@ mod tests {
         };
         let dtype = match std::env::var("ONDE_TEST_DTYPE").as_deref() {
             Ok("f16") => GgufDtype::F16,
+            Ok("q4_k_m") => GgufDtype::Q4KM,
             _ => GgufDtype::Q8_0,
         };
         eprintln!(
             "[test] model_dir={} dtype={}",
             model_dir.display(),
-            if matches!(dtype, GgufDtype::F16) {
-                "f16"
-            } else {
-                "q8_0"
+            match dtype {
+                GgufDtype::F16 => "f16",
+                GgufDtype::Q8_0 => "q8_0",
+                GgufDtype::Q4KM => "q4_k_m",
             }
         );
 
