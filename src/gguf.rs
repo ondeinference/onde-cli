@@ -33,6 +33,58 @@ pub struct GgufConfig {
     pub output_path: PathBuf,
     /// Target quantisation type for 2-D weight tensors.
     pub dtype: GgufDtype,
+    /// Written as `general.name`.
+    pub name: String,
+    /// Written as `general.description` when set.
+    pub description: Option<String>,
+    /// Written as `general.license` when set.
+    pub license: Option<String>,
+    /// Written as `general.base_model.0.repo_url` (a Hub URL) when set.
+    pub base_model_repo: Option<String>,
+    /// Written as `general.base_model.0.name` when set.
+    pub base_model_name: Option<String>,
+}
+
+impl GgufConfig {
+    /// The string-valued `general.*` entries, in write order. The header-size
+    /// accounting and the writer both read this list so they cannot drift.
+    fn general_strings(&self) -> Vec<(&'static str, String)> {
+        let mut entries = vec![("general.name", self.name.clone())];
+        let base_model_url = self
+            .base_model_repo
+            .as_ref()
+            .map(|repo| format!("https://huggingface.co/{repo}"));
+        let optional = [
+            ("general.description", &self.description),
+            ("general.license", &self.license),
+            ("general.base_model.0.name", &self.base_model_name),
+            ("general.base_model.0.repo_url", &base_model_url),
+        ];
+        for (key, value) in optional {
+            if let Some(value) = value {
+                entries.push((key, value.clone()));
+            }
+        }
+        entries
+    }
+
+    #[cfg(test)]
+    fn named(name: &str) -> Self {
+        Self {
+            model_dir: PathBuf::new(),
+            output_path: PathBuf::new(),
+            dtype: GgufDtype::Q8_0,
+            name: name.to_string(),
+            description: None,
+            license: None,
+            base_model_repo: None,
+            base_model_name: None,
+        }
+    }
+
+    fn has_base_model(&self) -> bool {
+        self.base_model_repo.is_some() || self.base_model_name.is_some()
+    }
 }
 
 /// Progress events emitted by the background export thread.
@@ -739,8 +791,10 @@ fn run_gguf_export(
         "qwen2"
     };
 
-    // Count metadata KV entries
-    let num_metadata: u64 = 20;
+    let general_strings = config.general_strings();
+    let base_model_count_key = "general.base_model.count";
+    // 19 fixed KV entries plus the variable `general.*` ones.
+    let num_metadata: u64 = 19 + general_strings.len() as u64 + u64::from(config.has_base_model());
 
     // Pre-compute header + metadata + tensor info byte size
     let mut header_size: u64 = 0;
@@ -749,7 +803,12 @@ fn run_gguf_export(
 
     // Metadata sizes
     header_size += kv_string_size("general.architecture", arch);
-    header_size += kv_string_size("general.name", "onde-finetuned");
+    for (key, value) in &general_strings {
+        header_size += kv_string_size(key, value);
+    }
+    if config.has_base_model() {
+        header_size += kv_u32_size(base_model_count_key);
+    }
     header_size += kv_u32_size("general.file_type");
     header_size += kv_u32_size(&format!("{arch}.block_count"));
     header_size += kv_u32_size(&format!("{arch}.embedding_length"));
@@ -799,7 +858,12 @@ fn run_gguf_export(
 
     // Metadata KV pairs
     write_kv_string(&mut w, "general.architecture", arch)?;
-    write_kv_string(&mut w, "general.name", "onde-finetuned")?;
+    for (key, value) in &general_strings {
+        write_kv_string(&mut w, key, value)?;
+    }
+    if config.has_base_model() {
+        write_kv_u32(&mut w, base_model_count_key, 1)?;
+    }
     write_kv_u32(&mut w, "general.file_type", file_type_val)?;
     write_kv_u32(
         &mut w,
@@ -1137,6 +1201,7 @@ mod tests {
                 model_dir: merged_dir,
                 output_path: gguf_path.clone(),
                 dtype: GgufDtype::Q8_0,
+                ..GgufConfig::named("finetuned")
             },
             &tx,
         )
@@ -1208,11 +1273,43 @@ mod tests {
                 model_dir,
                 output_path: output_path.clone(),
                 dtype,
+                name: "OndeOnde".to_string(),
+                description: Some("metadata round-trip".to_string()),
+                license: Some("apache-2.0".to_string()),
+                base_model_repo: Some("Qwen/Qwen3-0.6B".to_string()),
+                base_model_name: Some("Qwen3 0.6B".to_string()),
             },
             &tx,
         )
         .expect("GGUF export should succeed");
         assert!(output_path.exists(), "GGUF file was not written");
+
+        let mut file = std::fs::File::open(&output_path).unwrap();
+        let content = candle_core::quantized::gguf_file::Content::read(&mut file)
+            .expect("exported GGUF header must parse");
+        let string_at = |key: &str| -> String {
+            content
+                .metadata
+                .get(key)
+                .unwrap_or_else(|| panic!("missing KV {key}"))
+                .to_string()
+                .unwrap_or_else(|e| panic!("KV {key} is not a string: {e}"))
+                .clone()
+        };
+        assert_eq!(string_at("general.name"), "OndeOnde");
+        assert_eq!(string_at("general.license"), "apache-2.0");
+        assert_eq!(string_at("general.description"), "metadata round-trip");
+        assert_eq!(string_at("general.base_model.0.name"), "Qwen3 0.6B");
+        assert_eq!(
+            string_at("general.base_model.0.repo_url"),
+            "https://huggingface.co/Qwen/Qwen3-0.6B"
+        );
+        assert_eq!(
+            content.metadata["general.base_model.count"]
+                .to_u32()
+                .unwrap(),
+            1
+        );
 
         // 2. Load + run it through mistral.rs (the Onde SDK's engine).
         let reply = run_gguf_inference(&output_path, "Say hello in one short sentence.");
