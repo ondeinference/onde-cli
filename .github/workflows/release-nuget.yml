@@ -164,7 +164,7 @@ jobs:
           dotnet pack packaging/nuget/onde-cli/Onde.Cli.csproj \
             --configuration Release \
             --output packaging/nuget/dist \
-            -p:PackageVersion=${RELEASE_VERSION}
+            -p:PackageVersion="${RELEASE_VERSION}"
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
