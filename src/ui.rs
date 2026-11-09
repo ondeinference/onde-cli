@@ -1370,7 +1370,7 @@ fn render_gguf_detail(frame: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(1), // 13 Upload heading
             Constraint::Length(1), // 14 Repo Name label
             Constraint::Length(3), // 15 Repo Name input
-            Constraint::Length(1), // 16 spacer
+            Constraint::Length(1), // 16 upload options
             Constraint::Length(1), // 17 upload status / progress
             Constraint::Length(1), // 18 spacer
             Constraint::Min(0),    // 19 rest
@@ -1465,6 +1465,36 @@ fn render_gguf_detail(frame: &mut Frame, app: &App, area: Rect) {
                 .min(input_inner.x + input_inner.width.saturating_sub(1));
             frame.set_cursor_position((cursor_x, input_inner.y));
         }
+
+        // Options line: visibility, tag, and the files that ride along.
+        let tag_marker = if app.upload_tag_focused { "▌" } else { "" };
+        let extras = app
+            .current_project
+            .as_ref()
+            .map(|project| {
+                ["README.md", "LICENSE"]
+                    .into_iter()
+                    .filter(|name| project.project_dir.join(name).is_file())
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            })
+            .filter(|names| !names.is_empty())
+            .unwrap_or_else(|| "none".to_string());
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{} · tag: {}{} · with: {}",
+                if app.upload_private {
+                    "private"
+                } else {
+                    "public"
+                },
+                app.upload_tag,
+                tag_marker,
+                extras
+            ))
+            .style(Style::new().fg(C_MUTED)),
+            rows[16],
+        );
 
         // Upload progress / status
         render_upload_status(frame, app, rows[17]);
@@ -2665,6 +2695,16 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             if uploadable && !uploaded {
                 keys.push(Span::styled("Enter", Style::new().fg(C_NEON)));
                 keys.push(Span::styled(" · upload    ", Style::new().fg(C_MUTED)));
+                keys.push(Span::styled("Ctrl+P", Style::new().fg(C_NEON)));
+                keys.push(Span::styled(
+                    " · private/public    ",
+                    Style::new().fg(C_MUTED),
+                ));
+                keys.push(Span::styled("Tab", Style::new().fg(C_NEON)));
+                keys.push(Span::styled(
+                    " · repo/tag field    ",
+                    Style::new().fg(C_MUTED),
+                ));
             }
             if uploaded {
                 keys.push(Span::styled("a", Style::new().fg(C_NEON)));

@@ -47,6 +47,10 @@ For rank 8 on a 0.6B model, the adapter is about 1.5 MB. From the fine-tune comp
 
 The resulting GGUF loads directly in the [Onde SDK](https://ondeinference.com/sdk) for on-device AI inference.
 
+## Uploading
+
+Open the exported GGUF from the model's artifacts and press Enter to upload it to the repo named in the field. New repos are created private; Ctrl+P switches to public. Tab moves the cursor between the repo name and an optional tag (for example `v1`), which is created on `main` after the commit. If the project directory has a `README.md` or `LICENSE`, they go into the same commit as the model. The visibility flag only applies when the upload creates the repo; an existing repo keeps its current setting.
+
 ## Supported base models
 
 | Model | Size | Notes |
