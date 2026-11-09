@@ -101,7 +101,10 @@ jobs:
 
           case "$STATUS" in
             200)
-              if grep -F "\"version\":\"${RELEASE_VERSION}\"" "${index}" >/dev/null; then
+              # Dots in the version are escaped so 0.5.0 cannot match 0x5y0, and the
+              # optional spaces keep this working if the API ever pretty-prints.
+              escaped_version="${RELEASE_VERSION//./\\.}"
+              if grep -E "\"version\"[[:space:]]*:[[:space:]]*\"${escaped_version}\"" "${index}" >/dev/null; then
                 echo "${PUB_PACKAGE_NAME} ${RELEASE_VERSION} already exists on pub.dev, skipping publish"
                 echo "exists=true" >> "$GITHUB_OUTPUT"
               else
