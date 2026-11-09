@@ -1,3 +1,9 @@
+# Publishes @ondeinference/cli and its platform packages with npm Trusted
+# Publishing (OIDC), so there is no NPM_TOKEN to expire. Every package needs a
+# trusted publisher on npmjs.com that names this workflow file,
+# release-npm.yml, and a package added later needs one before its first CI
+# publish. OIDC needs npm 11.5.1 or later and Node 22.14 or later (.nvmrc).
+
 name: CLI Release NPM
 
 # Dispatched by release-crates.yml once the crate publish succeeds.
@@ -108,9 +114,13 @@ jobs:
           node-version-file: .nvmrc
           registry-url: "https://registry.npmjs.org"
 
+      # Trusted Publishing needs npm 11.5.1 or later, which is newer than what
+      # ships with Node 22.
+      - name: Upgrade npm for Trusted Publishing
+        shell: bash
+        run: npm install -g npm@latest
+
       - name: Publish platform package to NPM
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           cd packaging/npm
@@ -193,9 +203,13 @@ jobs:
           node-version-file: .nvmrc
           registry-url: "https://registry.npmjs.org"
 
+      # Trusted Publishing needs npm 11.5.1 or later, which is newer than what
+      # ships with Node 22.
+      - name: Upgrade npm for Trusted Publishing
+        shell: bash
+        run: npm install -g npm@latest
+
       - name: Publish base package to NPM
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         shell: bash
         run: |
           cd packaging/npm/onde-cli
