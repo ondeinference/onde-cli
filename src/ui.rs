@@ -2091,7 +2091,15 @@ fn render_merge_gguf_section(frame: &mut Frame, app: &App, area: Rect) {
         ));
         if app.merged_model_dir.is_some() {
             hints.push(Span::styled("g", Style::new().fg(C_NEON)));
-            hints.push(Span::styled(" · export GGUF    ", Style::new().fg(C_MUTED)));
+            hints.push(Span::styled(
+                " · export GGUF Q8_0    ",
+                Style::new().fg(C_MUTED),
+            ));
+            hints.push(Span::styled("G", Style::new().fg(C_NEON)));
+            hints.push(Span::styled(
+                " · export GGUF Q4_K_M    ",
+                Style::new().fg(C_MUTED),
+            ));
         }
         hints.push(Span::styled("Esc", Style::new().fg(C_NEON)));
         hints.push(Span::styled(" · back", Style::new().fg(C_MUTED)));
@@ -2610,7 +2618,15 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             ];
             if app.merged_model_dir.is_some() {
                 keys.push(Span::styled("g", Style::new().fg(C_NEON)));
-                keys.push(Span::styled(" · export GGUF    ", Style::new().fg(C_MUTED)));
+                keys.push(Span::styled(
+                    " · export GGUF Q8_0    ",
+                    Style::new().fg(C_MUTED),
+                ));
+                keys.push(Span::styled("G", Style::new().fg(C_NEON)));
+                keys.push(Span::styled(
+                    " · export GGUF Q4_K_M    ",
+                    Style::new().fg(C_MUTED),
+                ));
             }
             keys.push(Span::styled("Esc", Style::new().fg(C_NEON)));
             keys.push(Span::styled(" · back    ", Style::new().fg(C_MUTED)));
