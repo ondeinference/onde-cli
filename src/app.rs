@@ -353,6 +353,12 @@ pub struct App {
     pub upload_running: bool,
     pub upload_progress: Option<crate::hf_upload::UploadProgress>,
     pub upload_repo_name: String,
+    /// Create the repo as private (default). Toggled with Ctrl+P on the upload screen.
+    pub upload_private: bool,
+    /// Optional git tag created after the upload, e.g. `v1`.
+    pub upload_tag: String,
+    /// `true` when typing edits the tag instead of the repo name (Tab switches).
+    pub upload_tag_focused: bool,
     // active project (set when entering fine-tune from CloneRepo)
     pub current_project: Option<crate::project::OndeProject>,
     // clone repo (check + base model selection)
@@ -436,6 +442,9 @@ impl App {
             upload_running: false,
             upload_progress: None,
             upload_repo_name: String::new(),
+            upload_private: true,
+            upload_tag: String::new(),
+            upload_tag_focused: false,
             current_project: None,
             clone_repo_id: String::new(),
             clone_repo_checking: false,
@@ -1707,7 +1716,27 @@ fn handle_key_gguf_detail(
                 .as_ref()
                 .is_some_and(|g| g.is_uploadable()) =>
         {
-            app.upload_repo_name.pop();
+            if app.upload_tag_focused {
+                app.upload_tag.pop();
+            } else {
+                app.upload_repo_name.pop();
+            }
+        }
+        (Tab, _)
+            if app
+                .selected_gguf
+                .as_ref()
+                .is_some_and(|g| g.is_uploadable()) =>
+        {
+            app.upload_tag_focused = !app.upload_tag_focused;
+        }
+        (Char('p'), KeyModifiers::CONTROL)
+            if app
+                .selected_gguf
+                .as_ref()
+                .is_some_and(|g| g.is_uploadable()) =>
+        {
+            app.upload_private = !app.upload_private;
         }
         (Enter, _)
             if app
@@ -1729,12 +1758,29 @@ fn handle_key_gguf_detail(
                 return;
             };
 
+            // README.md and LICENSE in the project dir ride along in the same commit.
+            let extra_files: Vec<(String, std::path::PathBuf)> = app
+                .current_project
+                .as_ref()
+                .map(|project| {
+                    ["README.md", "LICENSE"]
+                        .into_iter()
+                        .map(|name| (name.to_string(), project.project_dir.join(name)))
+                        .filter(|(_, path)| path.is_file())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let tag = Some(app.upload_tag.trim().to_string()).filter(|tag| !tag.is_empty());
+
             let config = crate::hf_upload::UploadConfig {
                 file_path: gguf.path.clone(),
                 repo_id: app.upload_repo_name.clone(),
                 path_in_repo: gguf.file_name.clone(),
                 hf_token: token,
                 commit_message: format!("Upload fine-tuned GGUF: {}", gguf.file_name),
+                private: app.upload_private,
+                extra_files,
+                tag,
             };
 
             app.upload_running = true;
@@ -1759,7 +1805,11 @@ fn handle_key_gguf_detail(
                 .as_ref()
                 .is_some_and(|g| g.is_uploadable()) =>
         {
-            app.upload_repo_name.push(c);
+            if app.upload_tag_focused {
+                app.upload_tag.push(c);
+            } else {
+                app.upload_repo_name.push(c);
+            }
         }
         _ => {}
     }
