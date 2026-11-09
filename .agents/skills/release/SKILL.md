@@ -123,18 +123,18 @@ Pushing `vX.Y.Z` triggers a three-level chain. There is no separate "publish" st
 1. `release-crates.yml` (CLI Release Crates.io) checks the tag against `Cargo.toml` and
    `packaging/pub/onde_cli/pubspec.yaml`, publishes the crate, then dispatches
    **GitHub, npm, NuGet and PyPI**.
-2. `release-github.yml` (CLI Release GitHub) then dispatches **Homebrew, Scoop and winget**
+2. `release-github.yml` (CLI Release GitHub) then dispatches **Homebrew, pub.dev, Scoop and winget**
    once the release assets exist. A failed Scoop or winget dispatch only logs a warning
    (`core.warning`), so it is easy to miss.
 3. `release-nuget.yml` (CLI Release NuGet) then dispatches the **MCP Registry Release**, which
    waits for the npm and NuGet packages at this version. A failed npm or NuGet publish
    therefore also fails the MCP Registry run.
 
-pub.dev is the exception. `release-pub.yml` runs straight from the tag push, in parallel with
-`release-crates.yml`, because pub.dev only accepts publishes from the event configured in its
-admin page (`push`, tag pattern `v{{version}}`). So a failed crate release does not stop
-pub.dev. `release-github.yml` still dispatches `release-pub.yml`, but a dispatched run only
-verifies (analyze and dry-run) and never publishes.
+pub.dev depends on a setting. Its automated publishing only publishes from the events enabled in
+the package's admin page. `release-pub.yml` is dispatched, so "Enable publishing from
+`workflow_dispatch` events" has to be on there. pub.dev's own docs only describe publishing from a
+tag push, so how it treats a dispatched run is confirmed only by a real release. If the publish
+step is refused, publish that version by hand (`dart pub publish` in `packaging/pub/onde_cli`).
 
 ## Publishing credentials
 
@@ -145,7 +145,7 @@ shows up at release time as a failed publish, so don't add one back.
 |---|---|---|
 | npm | Trusted publishing | A trusted publisher on npmjs.com for each of the 7 packages (`@ondeinference/cli` and `-darwin-arm64`, `-darwin-x64`, `-linux-arm64`, `-linux-x64`, `-windows-arm64`, `-windows-x64`), naming `ondeinference/onde-cli` and `release-npm.yml`. Needs npm 11.5.1 or later and Node 22.14 or later, which the workflow sets up. |
 | NuGet | Trusted publishing | A policy on nuget.org naming `release-nuget.yml`, and the `NUGET_USER` repo secret (the profile name, not the email). |
-| pub.dev | Automated publishing | Publishing from GitHub Actions enabled in the package's admin page for this repo, tag pattern `v{{version}}`, `push` events on. |
+| pub.dev | Automated publishing | Publishing from GitHub Actions enabled in the package's admin page for this repo, tag pattern `v{{version}}`, `workflow_dispatch` events on. Leave "Require GitHub Actions environment" off, since the workflow uses none. |
 | crates.io, PyPI | See `.github/workflows/release-crates.yml` and `release-pypi.yml` | |
 
 The policy or trusted publisher names the workflow file that contains the publish job, not
@@ -206,12 +206,16 @@ After the pipeline finishes, spot-check the fan-out (all idempotent, safe to re-
   trusted publisher entries before looking for a token.
 - pub.dev dry-run failing on `CHANGELOG.md doesn't mention current version`. The changelog
   entry is a bump surface; add it before tagging.
-- A tag-push workflow runs the workflow file from the tagged commit, so fixing a workflow
-  doesn't help a tag that already exists. pub.dev is the case that bites, since it can't be
-  dispatched. Publish that version by hand (`dart pub publish` in `packaging/pub/onde_cli`) or
-  cut the next tag. Dispatchable workflows can be started from the fixed branch:
-  `gh workflow run <file> --ref <branch> -f tag=<tag>`.
+- The release-github.yml dispatch passes the tag as the ref, so a workflow run for a tag uses the
+  workflow file from that tagged commit. Fixing a workflow doesn't help a tag that already
+  exists. Start a fresh run from the fixed branch instead:
+  `gh workflow run <file> --ref <branch> -f tag=<tag>`. pub.dev is the exception, because a run
+  from a branch ref may not match the tag pattern, so publish that version by hand
+  (`dart pub publish` in `packaging/pub/onde_cli`) or cut the next tag.
+- pub.dev publishing was moved to tag pushes for a while (`workflow_dispatch` was off in its
+  settings), which took it out of the fan-out. It is dispatched again, which needs
+  `workflow_dispatch` on in the pub.dev settings.
 - A failed npm release leaves the MCP Registry run failing with "still not on npm after 10
   minutes". Fix npm, publish it, then re-dispatch the MCP Registry release for the tag.
-- Running the pub.dev verification for an old tag. It checks out that tag, so it uses that tag's
-  pubspec and changelog and fails if they predate the fix.
+- Re-running pub.dev for an old tag. It checks out that tag, so it uses that tag's pubspec and
+  changelog and fails if they predate the changelog rule.
