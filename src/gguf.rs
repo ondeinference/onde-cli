@@ -154,6 +154,20 @@ struct AddedToken {
     special: bool,
 }
 
+/// GGUF token types, stored as INT32: 1 = normal, 3 = control (special added
+/// token), 4 = user-defined (added token with `special: false`, such as
+/// Qwen2.5's `<tool_call>`). mistral.rs only registers tokens whose type is not
+/// 1 as added tokens, so type 4 keeps them as a single id; llama.cpp does the same.
+fn token_types(added: &[AddedToken], vocab_size: usize) -> Vec<i32> {
+    let mut types = vec![1; vocab_size];
+    for at in added {
+        if let Some(t) = types.get_mut(at.id as usize) {
+            *t = if at.special { 3 } else { 4 };
+        }
+    }
+    types
+}
+
 // ---------------------------------------------------------------------------
 // GGUF constants
 // ---------------------------------------------------------------------------
@@ -564,18 +578,7 @@ fn run_gguf_export(
     }
     tokens.truncate(vocab_size);
 
-    // Build special token lookup
-    let special_set: HashMap<u32, bool> = tok
-        .added_tokens
-        .iter()
-        .filter(|at| at.special)
-        .map(|at| (at.id, true))
-        .collect();
-
-    // Token types: 1 = normal, 3 = control (special). Stored as INT32 in GGUF.
-    let token_types: Vec<i32> = (0..vocab_size as u32)
-        .map(|id| if special_set.contains_key(&id) { 3 } else { 1 })
-        .collect();
+    let token_types = token_types(&tok.added_tokens, vocab_size);
 
     // BOS / EOS token IDs
     let added_token_id = |name: &str| -> Option<u32> {
