@@ -1,24 +1,18 @@
 # Publishes to pub.dev with automated publishing (OIDC), so there is no stored
 # credential to expire. The package's admin page on pub.dev must enable
 # publishing from GitHub Actions for this repository with the tag pattern
-# v{{version}} and "push" events. pub.dev rejects workflow_dispatch runs unless
-# that option is enabled there too, so a manual dispatch only verifies the
-# package (analyze and dry-run) and never publishes.
-#
-# This runs straight from the tag push, not from release-crates.yml. The
-# launcher downloads the native binary on first run, so the GitHub release
-# only needs to exist by the time someone runs it.
+# v{{version}} and "workflow_dispatch" events turned on, because this workflow
+# is dispatched by release-github.yml with the release tag as its ref and
+# input. If pub.dev refuses a dispatched run, publish that version by hand
+# (dart pub publish in packaging/pub/onde_cli).
 
 name: CLI Release pub.dev
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to verify, without publishing (e.g. v0.5.0)"
+        description: "Release tag (e.g. v0.5.0)"
         required: true
 
 permissions:
@@ -35,12 +29,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.inputs.tag }}
 
       - name: Set the release version
         shell: bash
         run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          tag="${{ github.event.inputs.tag }}"
           echo "RELEASE_VERSION=${tag#v}" >> "$GITHUB_ENV"
 
       - name: Setup Dart SDK
@@ -73,17 +67,20 @@ jobs:
     name: Publish to pub.dev
     runs-on: ubuntu-latest
     needs: verify-package
-    if: github.event_name == 'push'
     permissions:
       contents: read
       id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.tag }}
 
       - name: Set the release version
         shell: bash
-        run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+        run: |
+          tag="${{ github.event.inputs.tag }}"
+          echo "RELEASE_VERSION=${tag#v}" >> "$GITHUB_ENV"
 
       # setup-dart exchanges the workflow's OIDC token for a pub.dev token when
       # id-token: write is granted.
