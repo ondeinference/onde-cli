@@ -165,6 +165,11 @@ jobs:
 
           cp "../../target/${{ matrix.build.TARGET }}/release/${cargo_bin}" "${node_pkg}/bin"
 
+          # MLX loads its Metal kernels from mlx.metallib next to the binary.
+          if [ "${{ matrix.build.NAME }}" = "darwin-arm64" ]; then
+            cp "$(cd ../.. && packaging/macos/find-mlx-metallib.sh "${{ matrix.build.TARGET }}")" "${node_pkg}/bin/mlx.metallib"
+          fi
+
           cd "${node_pkg}"
 
           npm_package_name="@ondeinference/${node_pkg}"

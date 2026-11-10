@@ -118,6 +118,11 @@ jobs:
           mkdir -p "nuget-artifacts/native/${{ matrix.build.NAME }}"
           cp "target/${{ matrix.build.TARGET }}/release/${executable_name}" "nuget-artifacts/native/${{ matrix.build.NAME }}/${executable_name}"
 
+          # MLX loads its Metal kernels from mlx.metallib next to the binary.
+          if [[ "${{ matrix.build.NAME }}" == "darwin-arm64" ]]; then
+            cp "$(packaging/macos/find-mlx-metallib.sh "${{ matrix.build.TARGET }}")" "nuget-artifacts/native/darwin-arm64/mlx.metallib"
+          fi
+
       - name: Upload native artifact
         uses: actions/upload-artifact@v4
         with:
