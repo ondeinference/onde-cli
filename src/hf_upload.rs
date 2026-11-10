@@ -666,6 +666,27 @@ async fn commit(
 // Step 8: Tag
 // ---------------------------------------------------------------------------
 
+/// Checks a tag name against git's ref-name rules, so a bad one is rejected
+/// before the upload starts instead of after the whole GGUF has gone up.
+pub fn validate_tag(tag: &str) -> std::result::Result<(), String> {
+    if let Some(c) = tag
+        .chars()
+        .find(|c| c.is_whitespace() || c.is_control() || " ~^:?*[\\".contains(*c))
+    {
+        return Err(format!("Tag cannot contain {c:?}."));
+    }
+    if tag.starts_with(['.', '-', '/']) || tag.ends_with(['.', '/']) {
+        return Err("Tag cannot start with '.', '-' or '/', or end with '.' or '/'.".to_string());
+    }
+    if tag.ends_with(".lock") || tag.contains("..") || tag.contains("//") || tag.contains("@{") {
+        return Err("Tag cannot contain '..', '//', '@{', or end with '.lock'.".to_string());
+    }
+    if tag == "@" {
+        return Err("Tag cannot be '@'.".to_string());
+    }
+    Ok(())
+}
+
 async fn create_tag(client: &reqwest::Client, token: &str, repo_id: &str, tag: &str) -> Result<()> {
     let url = format!("https://huggingface.co/api/models/{repo_id}/tag/main");
     let response = client
@@ -724,6 +745,19 @@ mod tests {
         assert_eq!(lines[2]["value"]["path"], "README.md");
         assert_eq!(lines[2]["value"]["encoding"], "base64");
         assert_eq!(lines[2]["value"]["content"], "IyBIaQo=");
+    }
+
+    #[test]
+    fn tag_validation_follows_git_ref_rules() {
+        for ok in ["v1", "v1.0.0", "release/2", "ondeonde-v1", "a.b"] {
+            assert!(validate_tag(ok).is_ok(), "{ok} should pass");
+        }
+        for bad in [
+            "v 1", "v~1", "v^", "a:b", "a?b", "a*b", "a[b", "a\\b", ".hidden", "-x", "/x", "x/",
+            "x.", "x.lock", "a..b", "a//b", "a@{b", "@", "tab\tx",
+        ] {
+            assert!(validate_tag(bad).is_err(), "{bad:?} should fail");
+        }
     }
 
     #[test]

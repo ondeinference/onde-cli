@@ -1460,14 +1460,26 @@ fn render_gguf_detail(frame: &mut Frame, app: &App, area: Rect) {
             Paragraph::new(app.upload_repo_name.as_str()).style(Style::new().fg(C_TEXT)),
             input_inner,
         );
-        if input_focused {
+        if input_focused && !app.upload_tag_focused {
             let cursor_x = (input_inner.x + app.upload_repo_name.chars().count() as u16)
                 .min(input_inner.x + input_inner.width.saturating_sub(1));
             frame.set_cursor_position((cursor_x, input_inner.y));
         }
 
         // Options line: visibility, tag, and the files that ride along.
-        let tag_marker = if app.upload_tag_focused { "▌" } else { "" };
+        let visibility = if app.upload_private {
+            "private"
+        } else {
+            "public"
+        };
+        let options_prefix = format!("{visibility} · tag: ");
+        if input_focused && app.upload_tag_focused {
+            let cursor_x = (rows[16].x
+                + options_prefix.chars().count() as u16
+                + app.upload_tag.chars().count() as u16)
+                .min(rows[16].x + rows[16].width.saturating_sub(1));
+            frame.set_cursor_position((cursor_x, rows[16].y));
+        }
         let extras = app
             .current_project
             .as_ref()
@@ -1482,15 +1494,8 @@ fn render_gguf_detail(frame: &mut Frame, app: &App, area: Rect) {
             .unwrap_or_else(|| "none".to_string());
         frame.render_widget(
             Paragraph::new(format!(
-                "{} · tag: {}{} · with: {}",
-                if app.upload_private {
-                    "private"
-                } else {
-                    "public"
-                },
-                app.upload_tag,
-                tag_marker,
-                extras
+                "{options_prefix}{} · with: {extras}",
+                app.upload_tag
             ))
             .style(Style::new().fg(C_MUTED)),
             rows[16],
