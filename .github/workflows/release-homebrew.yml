@@ -91,6 +91,9 @@ jobs:
 
             def install
               bin.install 'onde'
+              # Apple Silicon archives carry the MLX Metal kernels; MLX looks for
+              # them next to the binary.
+              bin.install 'mlx.metallib' if File.exist?('mlx.metallib')
             end
 
             test do
