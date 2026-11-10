@@ -88,10 +88,91 @@ pub fn start_finetune(
 // Private: top-level orchestration
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Private: backend selection and orchestration
+// ---------------------------------------------------------------------------
+
+/// One tokenised training sequence plus its per-token loss mask.
+struct TrainingExample {
+    tokens: Vec<u32>,
+    mask: Vec<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    /// MLX (Apple Silicon only).
+    Mlx,
+    /// candle on CPU.
+    Cpu,
+    /// candle on Metal (opt-in; the backward pass is broken in candle 0.10.x).
+    Metal,
+}
+
+const MLX_AVAILABLE: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+
+/// `ONDE_FINETUNE_BACKEND=mlx|cpu|metal`. Default is MLX on macOS arm64 and
+/// CPU everywhere else. `ONDE_FINETUNE_METAL=1` is kept as an alias for `metal`.
+fn select_backend() -> Result<Backend> {
+    let choice = std::env::var("ONDE_FINETUNE_BACKEND").ok();
+    let backend = match choice.as_deref().map(str::trim) {
+        None | Some("") => {
+            if std::env::var("ONDE_FINETUNE_METAL").is_ok() {
+                Backend::Metal
+            } else if MLX_AVAILABLE {
+                Backend::Mlx
+            } else {
+                Backend::Cpu
+            }
+        }
+        Some("mlx") => Backend::Mlx,
+        Some("cpu") => Backend::Cpu,
+        Some("metal") => Backend::Metal,
+        Some(other) => {
+            anyhow::bail!("unknown ONDE_FINETUNE_BACKEND {other:?}; expected mlx, cpu or metal")
+        }
+    };
+    if backend == Backend::Mlx && !MLX_AVAILABLE {
+        anyhow::bail!("the MLX backend is only available on macOS arm64");
+    }
+    if backend == Backend::Metal && !cfg!(target_os = "macos") {
+        anyhow::bail!("the Metal backend is only available on macOS");
+    }
+    Ok(backend)
+}
+
 fn run_finetune(
     config: &FineTuneConfig,
     tx: &tokio::sync::mpsc::UnboundedSender<FineTuneProgress>,
 ) -> Result<()> {
+    let backend = select_backend()?;
+    eprintln!("[finetune] backend: {backend:?}");
+
+    // Validate, parse config and tokenise first. Nothing has touched the model
+    // weights yet, so the MLX path never maps them through candle as well.
+    let (model_cfg, examples) = prepare(config, tx)?;
+
+    match backend {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        Backend::Mlx => mlx::train_mlx(config, &model_cfg, &examples, tx),
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        Backend::Mlx => unreachable!("select_backend rejects MLX on this target"),
+        Backend::Cpu => train_candle(config, &model_cfg, &examples, Device::Cpu, tx),
+        #[cfg(target_os = "macos")]
+        Backend::Metal => {
+            let device = Device::new_metal(0).unwrap_or(Device::Cpu);
+            train_candle(config, &model_cfg, &examples, device, tx)
+        }
+        #[cfg(not(target_os = "macos"))]
+        Backend::Metal => unreachable!("select_backend rejects Metal on this target"),
+    }
+}
+
+/// Steps A, B and F: validate inputs, read the model config, tokenise and mask
+/// the dataset.
+fn prepare(
+    config: &FineTuneConfig,
+    tx: &tokio::sync::mpsc::UnboundedSender<FineTuneProgress>,
+) -> Result<(ModelConfig, Vec<TrainingExample>)> {
     // ------------------------------------------------------------------
     // Step A — Validate inputs
     // ------------------------------------------------------------------
@@ -119,66 +200,6 @@ fn run_finetune(
         .with_context(|| format!("parsing {:?}", config_json_path))?;
 
     // ------------------------------------------------------------------
-    // Step C — Choose compute device
-    // ------------------------------------------------------------------
-    // Training runs on CPU even on macOS: candle 0.10.2's Metal *backward*
-    // pass produces garbage gradient magnitudes (1e6–1e29 at pristine weights,
-    // where the CPU backward yields norms of ~40–65 for identical losses), and
-    // with Accelerate the CPU backward is also ~2x faster per step. Metal
-    // remains opt-in via ONDE_FINETUNE_METAL for re-testing on newer candle.
-    // Forward-only paths (inference, merge, export) are unaffected.
-    #[cfg(target_os = "macos")]
-    let device = if std::env::var("ONDE_FINETUNE_METAL").is_ok() {
-        Device::new_metal(0).unwrap_or(Device::Cpu)
-    } else {
-        Device::Cpu
-    };
-    #[cfg(not(target_os = "macos"))]
-    let device = Device::Cpu;
-
-    // ------------------------------------------------------------------
-    // Step D — Load frozen base weights
-    // ------------------------------------------------------------------
-    let _ = tx.send(FineTuneProgress::LoadingModel);
-
-    let index_path = model_dir.join("model.safetensors.index.json");
-    let vb = if index_path.exists() {
-        // Sharded model: read the weight-map JSON and collect unique shard paths.
-        let index_text = std::fs::read_to_string(&index_path)
-            .with_context(|| format!("reading {:?}", index_path))?;
-        let index: IndexJson = serde_json::from_str(&index_text)
-            .with_context(|| format!("parsing {:?}", index_path))?;
-
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut shard_paths: Vec<PathBuf> = Vec::new();
-        for filename in index.weight_map.values() {
-            if seen.insert(filename.clone()) {
-                shard_paths.push(model_dir.join(filename));
-            }
-        }
-        shard_paths.sort();
-
-        // SAFETY: the files are memory-mapped read-only.
-        unsafe {
-            VarBuilder::from_mmaped_safetensors(&shard_paths, DType::F32, &device)
-                .context("loading sharded safetensors")?
-        }
-    } else {
-        let single = model_dir.join("model.safetensors");
-        // SAFETY: the file is memory-mapped read-only.
-        unsafe {
-            VarBuilder::from_mmaped_safetensors(&[single], DType::F32, &device)
-                .context("loading model.safetensors")?
-        }
-    };
-
-    // ------------------------------------------------------------------
-    // Step E — Build LoRA model
-    // ------------------------------------------------------------------
-    let model = LoraQwenModel::load(vb, &model_cfg, config.lora_rank, config.lora_alpha, &device)
-        .context("building LoRA model")?;
-
-    // ------------------------------------------------------------------
     // Step F — Load and tokenize dataset
     // ------------------------------------------------------------------
     let tokenizer_path = model_dir.join("tokenizer.json");
@@ -194,11 +215,6 @@ fn run_finetune(
         .context("reading training data")?;
 
     let total_lines = raw_lines.len();
-
-    struct TrainingExample {
-        tokens: Vec<u32>,
-        mask: Vec<bool>,
-    }
 
     let mut examples: Vec<TrainingExample> = Vec::new();
 
@@ -286,6 +302,65 @@ fn run_finetune(
     if examples.is_empty() {
         anyhow::bail!("no valid training examples found in {:?}", config.data_path);
     }
+
+    Ok((model_cfg, examples))
+}
+
+/// Steps C to E, G and H on candle: build the LoRA model on `device`, train,
+/// save the adapter. Training runs on CPU unless the caller asks for Metal:
+/// candle 0.10.2's Metal *backward* pass produces garbage gradient magnitudes
+/// (1e6-1e29 at pristine weights, where the CPU backward yields norms of
+/// ~40-65 for identical losses). Forward-only paths are unaffected.
+fn train_candle(
+    config: &FineTuneConfig,
+    model_cfg: &ModelConfig,
+    examples: &[TrainingExample],
+    device: Device,
+    tx: &tokio::sync::mpsc::UnboundedSender<FineTuneProgress>,
+) -> Result<()> {
+    let model_dir = &config.model_dir;
+
+    // ------------------------------------------------------------------
+    // Step D — Load frozen base weights
+    // ------------------------------------------------------------------
+    let _ = tx.send(FineTuneProgress::LoadingModel);
+
+    let index_path = model_dir.join("model.safetensors.index.json");
+    let vb = if index_path.exists() {
+        // Sharded model: read the weight-map JSON and collect unique shard paths.
+        let index_text = std::fs::read_to_string(&index_path)
+            .with_context(|| format!("reading {:?}", index_path))?;
+        let index: IndexJson = serde_json::from_str(&index_text)
+            .with_context(|| format!("parsing {:?}", index_path))?;
+
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut shard_paths: Vec<PathBuf> = Vec::new();
+        for filename in index.weight_map.values() {
+            if seen.insert(filename.clone()) {
+                shard_paths.push(model_dir.join(filename));
+            }
+        }
+        shard_paths.sort();
+
+        // SAFETY: the files are memory-mapped read-only.
+        unsafe {
+            VarBuilder::from_mmaped_safetensors(&shard_paths, DType::F32, &device)
+                .context("loading sharded safetensors")?
+        }
+    } else {
+        let single = model_dir.join("model.safetensors");
+        // SAFETY: the file is memory-mapped read-only.
+        unsafe {
+            VarBuilder::from_mmaped_safetensors(&[single], DType::F32, &device)
+                .context("loading model.safetensors")?
+        }
+    };
+
+    // ------------------------------------------------------------------
+    // Step E — Build LoRA model
+    // ------------------------------------------------------------------
+    let model = LoraQwenModel::load(vb, model_cfg, config.lora_rank, config.lora_alpha, &device)
+        .context("building LoRA model")?;
 
     // ------------------------------------------------------------------
     // Step G — Training loop
@@ -522,6 +597,26 @@ struct ModelConfig {
     rope_theta: Option<f64>,
     #[serde(default)]
     tie_word_embeddings: bool,
+}
+
+impl ModelConfig {
+    fn num_kv_heads(&self) -> usize {
+        self.num_key_value_heads.unwrap_or(self.num_attention_heads)
+    }
+
+    /// Qwen3 sets `head_dim` explicitly; Qwen2/2.5 derive it.
+    fn head_dim(&self) -> usize {
+        self.head_dim
+            .unwrap_or(self.hidden_size / self.num_attention_heads)
+    }
+
+    fn rope_theta(&self) -> f64 {
+        self.rope_theta.unwrap_or(10_000.0)
+    }
+
+    fn rms_norm_eps(&self) -> f64 {
+        self.rms_norm_eps.unwrap_or(1e-6)
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -946,11 +1041,11 @@ impl LoraQwenModel {
         let hidden_size = cfg.hidden_size;
         let vocab_size = cfg.vocab_size;
         let num_heads = cfg.num_attention_heads;
-        let num_kv_heads = cfg.num_key_value_heads.unwrap_or(num_heads);
-        let head_dim = cfg.head_dim.unwrap_or(hidden_size / num_heads);
+        let num_kv_heads = cfg.num_kv_heads();
+        let head_dim = cfg.head_dim();
         let intermediate_size = cfg.intermediate_size;
-        let rms_norm_eps = cfg.rms_norm_eps.unwrap_or(1e-6);
-        let rope_theta = cfg.rope_theta.unwrap_or(10_000.0);
+        let rms_norm_eps = cfg.rms_norm_eps();
+        let rope_theta = cfg.rope_theta();
 
         // Maximum sequence length for the RoPE tables.
         // 2048 covers all models targeted by this module; increase if needed.
@@ -1161,6 +1256,9 @@ impl LoraQwenModel {
 // `cargo test` would fail to compile on other targets without this gate.
 #[cfg(all(test, target_os = "macos"))]
 mod spike;
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod mlx;
 
 #[cfg(test)]
 mod tests {
