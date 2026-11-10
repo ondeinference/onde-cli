@@ -7,7 +7,9 @@
 //!   4. `POST /{repo}.git/info/lfs/objects/batch` — get the S3 upload URL
 //!   5. `PUT {s3_url}` — stream the file to S3
 //!   6. `POST /{repo}.git/info/lfs/objects/verify` — confirm the upload
-//!   7. `POST /api/models/{repo}/commit/main` — create the commit
+//!   7. `POST /api/models/{repo}/commit/main` — create the commit (ndjson),
+//!      with any extra files as regular entries next to the LFS pointer
+//!   8. `POST /api/models/{repo}/tag/main` — optional tag
 //!
 //! Progress is reported through a `tokio::sync::mpsc::UnboundedSender` so the
 //! TUI can drive a progress bar without blocking.
@@ -33,6 +35,13 @@ pub struct UploadConfig {
     pub hf_token: String,
     /// Commit message shown on HuggingFace.
     pub commit_message: String,
+    /// Create the repo as private. Only applies when the repo does not exist yet.
+    pub private: bool,
+    /// Extra small text files committed together with the model, as
+    /// `(path_in_repo, local_path)`, e.g. `README.md` and `LICENSE`.
+    pub extra_files: Vec<(String, PathBuf)>,
+    /// Git tag to create on `main` after the commit lands.
+    pub tag: Option<String>,
 }
 
 /// Progress updates emitted during the upload.
@@ -95,7 +104,7 @@ async fn run_upload(
     // -- Step 1: Create the repo (or confirm it already exists) ---------------
 
     let _ = tx.send(UploadProgress::CreatingRepo);
-    create_repo(&client, &config.hf_token, &config.repo_id).await?;
+    create_repo(&client, &config.hf_token, &config.repo_id, config.private).await?;
 
     // -- Step 2: Preupload check ----------------------------------------------
 
@@ -160,14 +169,13 @@ async fn run_upload(
 
         let _ = tx.send(UploadProgress::Committing);
 
-        lfs_commit(
+        commit(
             &client,
-            &config.hf_token,
-            &config.repo_id,
-            &config.path_in_repo,
-            &config.commit_message,
-            &sha256,
-            file_size,
+            config,
+            CommitMainFile::Lfs {
+                sha256: &sha256,
+                file_size,
+            },
         )
         .await?;
     } else {
@@ -177,17 +185,15 @@ async fn run_upload(
             bytes_total: file_size,
         });
 
-        regular_commit(
-            &client,
-            &config.hf_token,
-            &config.repo_id,
-            &config.path_in_repo,
-            &config.commit_message,
-            &config.file_path,
-            file_size,
-            tx,
-        )
-        .await?;
+        let content = tokio::fs::read(&config.file_path)
+            .await
+            .with_context(|| format!("failed to read {}", config.file_path.display()))?;
+        let _ = tx.send(UploadProgress::Committing);
+        commit(&client, config, CommitMainFile::Inline { content }).await?;
+    }
+
+    if let Some(tag) = &config.tag {
+        create_tag(&client, &config.hf_token, &config.repo_id, tag).await?;
     }
 
     let model_url = format!("https://huggingface.co/{}", config.repo_id);
@@ -200,21 +206,26 @@ async fn run_upload(
 // Step 1: Create repo
 // ---------------------------------------------------------------------------
 
-async fn create_repo(client: &reqwest::Client, token: &str, repo_id: &str) -> Result<()> {
+async fn create_repo(
+    client: &reqwest::Client,
+    token: &str,
+    repo_id: &str,
+    private: bool,
+) -> Result<()> {
     // The HF API expects "name" (repo only) and "organization" as separate fields.
     let create_body = if let Some((org, name)) = repo_id.split_once('/') {
         serde_json::json!({
             "type": "model",
             "name": name,
             "organization": org,
-            "private": false,
+            "private": private,
             "sdk": "onde-cli"
         })
     } else {
         serde_json::json!({
             "type": "model",
             "name": repo_id,
-            "private": false,
+            "private": private,
             "sdk": "onde-cli"
         })
     };
@@ -549,41 +560,93 @@ async fn lfs_verify(
 }
 
 // ---------------------------------------------------------------------------
-// Step 7: LFS commit
+// Step 7: Commit
 // ---------------------------------------------------------------------------
 
-async fn lfs_commit(
-    client: &reqwest::Client,
-    token: &str,
-    repo_id: &str,
-    path_in_repo: &str,
+/// How the main upload file enters the commit.
+enum CommitMainFile<'a> {
+    /// Already uploaded to LFS storage; the commit carries a pointer.
+    Lfs { sha256: &'a str, file_size: u64 },
+    /// Small file sent inline.
+    Inline { content: Vec<u8> },
+}
+
+/// Build the newline-delimited JSON body of `POST /api/models/{repo}/commit/main`.
+fn build_commit_payload(
     commit_message: &str,
-    sha256: &str,
-    file_size: u64,
-) -> Result<()> {
-    let url = format!("https://huggingface.co/api/models/{repo_id}/commit/main");
+    path_in_repo: &str,
+    main_file: &CommitMainFile<'_>,
+    extra_files: &[(String, Vec<u8>)],
+) -> Result<String> {
+    use base64::Engine;
+    let encode = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
 
-    // Build the LFS pointer content that HuggingFace expects.
-    let lfs_pointer = format!(
-        "version https://git-lfs.github.com/spec/v1\noid sha256:{sha256}\nsize {file_size}\n"
-    );
-
-    let body = serde_json::json!({
-        "summary": commit_message,
-        "files": [{
-            "path": path_in_repo,
-            "content": lfs_pointer,
-            "lfs": {
+    let mut lines = vec![serde_json::json!({
+        "key": "header",
+        "value": { "summary": commit_message, "description": "" }
+    })];
+    lines.push(match main_file {
+        CommitMainFile::Lfs { sha256, file_size } => serde_json::json!({
+            "key": "lfsFile",
+            "value": {
+                "path": path_in_repo,
+                "algo": "sha256",
                 "oid": sha256,
                 "size": file_size
             }
-        }]
+        }),
+        CommitMainFile::Inline { content } => serde_json::json!({
+            "key": "file",
+            "value": {
+                "path": path_in_repo,
+                "content": encode(content),
+                "encoding": "base64"
+            }
+        }),
     });
+    for (path, content) in extra_files {
+        lines.push(serde_json::json!({
+            "key": "file",
+            "value": { "path": path, "content": encode(content), "encoding": "base64" }
+        }));
+    }
 
+    let mut payload = String::new();
+    for line in lines {
+        payload.push_str(&serde_json::to_string(&line).context("failed to encode commit line")?);
+        payload.push('\n');
+    }
+    Ok(payload)
+}
+
+async fn commit(
+    client: &reqwest::Client,
+    config: &UploadConfig,
+    main_file: CommitMainFile<'_>,
+) -> Result<()> {
+    let mut extra_files = Vec::new();
+    for (path_in_repo, local_path) in &config.extra_files {
+        let content = tokio::fs::read(local_path)
+            .await
+            .with_context(|| format!("failed to read {}", local_path.display()))?;
+        extra_files.push((path_in_repo.clone(), content));
+    }
+    let payload = build_commit_payload(
+        &config.commit_message,
+        &config.path_in_repo,
+        &main_file,
+        &extra_files,
+    )?;
+
+    let url = format!(
+        "https://huggingface.co/api/models/{}/commit/main",
+        config.repo_id
+    );
     let response = client
         .post(&url)
-        .bearer_auth(token)
-        .json(&body)
+        .bearer_auth(&config.hf_token)
+        .header("Content-Type", "application/x-ndjson")
+        .body(payload)
         .send()
         .await
         .context("commit request failed")?;
@@ -600,60 +663,142 @@ async fn lfs_commit(
 }
 
 // ---------------------------------------------------------------------------
-// Regular (non-LFS) commit for small files
+// Step 8: Tag
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
-async fn regular_commit(
-    client: &reqwest::Client,
-    token: &str,
-    repo_id: &str,
-    path_in_repo: &str,
-    commit_message: &str,
-    file_path: &std::path::Path,
-    file_size: u64,
-    tx: &tokio::sync::mpsc::UnboundedSender<UploadProgress>,
-) -> Result<()> {
-    let content = tokio::fs::read(file_path)
-        .await
-        .with_context(|| format!("failed to read {}", file_path.display()))?;
+/// Checks a tag name against git's ref-name rules, so a bad one is rejected
+/// before the upload starts instead of after the whole GGUF has gone up.
+pub fn validate_tag(tag: &str) -> std::result::Result<(), String> {
+    if let Some(c) = tag
+        .chars()
+        .find(|c| c.is_whitespace() || c.is_control() || " ~^:?*[\\".contains(*c))
+    {
+        return Err(format!("Tag cannot contain {c:?}."));
+    }
+    if tag.starts_with(['-', '/']) || tag.ends_with(['.', '/']) {
+        return Err("Tag cannot start with '-' or '/', or end with '.' or '/'.".to_string());
+    }
+    if tag.contains("..") || tag.contains("//") || tag.contains("@{") {
+        return Err("Tag cannot contain '..', '//' or '@{'.".to_string());
+    }
+    if tag
+        .split('/')
+        .any(|part| part.starts_with('.') || part.ends_with(".lock"))
+    {
+        return Err("No part of the tag can start with '.' or end with '.lock'.".to_string());
+    }
+    if tag == "@" {
+        return Err("Tag cannot be '@'.".to_string());
+    }
+    Ok(())
+}
 
-    let _ = tx.send(UploadProgress::Uploading {
-        bytes_sent: file_size,
-        bytes_total: file_size,
-    });
-
-    // For small regular files, send content as a UTF-8 string.
-    // Binary files should always go through the LFS path instead.
-    let content_str = String::from_utf8_lossy(&content).into_owned();
-
-    let url = format!("https://huggingface.co/api/models/{repo_id}/commit/main");
-
-    let body = serde_json::json!({
-        "summary": commit_message,
-        "files": [{
-            "path": path_in_repo,
-            "content": content_str
-        }]
-    });
-
-    let _ = tx.send(UploadProgress::Committing);
-
+async fn create_tag(client: &reqwest::Client, token: &str, repo_id: &str, tag: &str) -> Result<()> {
+    let url = format!("https://huggingface.co/api/models/{repo_id}/tag/main");
     let response = client
         .post(&url)
         .bearer_auth(token)
-        .json(&body)
+        .json(&serde_json::json!({ "tag": tag, "message": format!("Release {tag}") }))
         .send()
         .await
-        .context("commit request failed")?;
+        .context("tag request failed")?;
 
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
-    eprintln!("[upload] regular commit: {status} {text}");
+    eprintln!("[upload] tag: {status} {text}");
 
     if !status.is_success() {
-        anyhow::bail!("commit failed: {status} {text}");
+        anyhow::bail!("tagging {tag} failed: {status} {text}");
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_lines(payload: &str) -> Vec<serde_json::Value> {
+        payload
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn commit_payload_puts_lfs_pointer_and_extras_in_one_commit() {
+        let payload = build_commit_payload(
+            "Add model",
+            "model.gguf",
+            &CommitMainFile::Lfs {
+                sha256: "abc123",
+                file_size: 42,
+            },
+            &[("README.md".to_string(), b"# Hi\n".to_vec())],
+        )
+        .unwrap();
+        assert!(payload.ends_with('\n'));
+
+        let lines = parse_lines(&payload);
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["key"], "header");
+        assert_eq!(lines[0]["value"]["summary"], "Add model");
+        assert_eq!(lines[1]["key"], "lfsFile");
+        assert_eq!(lines[1]["value"]["path"], "model.gguf");
+        assert_eq!(lines[1]["value"]["oid"], "abc123");
+        assert_eq!(lines[1]["value"]["size"], 42);
+        assert_eq!(lines[2]["key"], "file");
+        assert_eq!(lines[2]["value"]["path"], "README.md");
+        assert_eq!(lines[2]["value"]["encoding"], "base64");
+        assert_eq!(lines[2]["value"]["content"], "IyBIaQo=");
+    }
+
+    #[test]
+    fn tag_validation_follows_git_ref_rules() {
+        for ok in ["v1", "v1.0.0", "release/2", "ondeonde-v1", "a.b"] {
+            assert!(validate_tag(ok).is_ok(), "{ok} should pass");
+        }
+        for bad in [
+            "v 1",
+            "v~1",
+            "v^",
+            "a:b",
+            "a?b",
+            "a*b",
+            "a[b",
+            "a\\b",
+            ".hidden",
+            "-x",
+            "/x",
+            "x/",
+            "x.",
+            "x.lock",
+            "a.lock/b",
+            "a/.hidden",
+            "a..b",
+            "a//b",
+            "a@{b",
+            "@",
+            "tab\tx",
+        ] {
+            assert!(validate_tag(bad).is_err(), "{bad:?} should fail");
+        }
+    }
+
+    #[test]
+    fn commit_payload_inline_main_file() {
+        let payload = build_commit_payload(
+            "Add",
+            "small.txt",
+            &CommitMainFile::Inline {
+                content: b"x".to_vec(),
+            },
+            &[],
+        )
+        .unwrap();
+        let lines = parse_lines(&payload);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[1]["key"], "file");
+        assert_eq!(lines[1]["value"]["content"], "eA==");
+    }
 }

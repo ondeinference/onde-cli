@@ -3615,6 +3615,7 @@ name = "onde-cli"
 version = "0.5.1"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "crossterm 0.28.1",
  "dirs 5.0.1",
  "dotenvy",
