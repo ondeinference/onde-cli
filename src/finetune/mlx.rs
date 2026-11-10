@@ -484,6 +484,33 @@ impl AdamW {
 // Training loop
 // ---------------------------------------------------------------------------
 
+/// Runs one tiny op so MLX loads its Metal kernels now. A missing
+/// `mlx.metallib` otherwise surfaces as a panic partway into training, because
+/// MLX looks for it next to the `onde` binary (or in `~/.mlx/lib` on the
+/// machine that built it) and the library is only read on first use.
+pub(super) fn metal_ready() -> Result<()> {
+    let probe = std::panic::catch_unwind(|| {
+        mlx_rs::Array::from_slice(&[1.0f32], &[1])
+            .eval()
+            .map_err(|e| e.to_string())
+    });
+    let dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.canonicalize().ok())
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+        .map_or_else(
+            || "the onde binary".to_string(),
+            |d| d.display().to_string(),
+        );
+    match probe {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => anyhow::bail!("MLX could not start ({e}); mlx.metallib belongs in {dir}"),
+        Err(_) => {
+            anyhow::bail!("MLX could not load its Metal kernels; mlx.metallib belongs in {dir}")
+        }
+    }
+}
+
 pub(super) fn train_mlx(
     config: &FineTuneConfig,
     model_cfg: &ModelConfig,
@@ -1019,6 +1046,11 @@ mod tests {
         let mut zero = Params::new();
         zero.insert("a".into(), Array::from_slice(&[0.0f32; 3], &[3]));
         assert_eq!(grad_stats(&zero).unwrap().1, 0.0);
+    }
+
+    #[test]
+    fn metal_ready_finds_the_kernels() {
+        metal_ready().unwrap();
     }
 
     #[test]
