@@ -1771,6 +1771,10 @@ fn handle_key_gguf_detail(
                 })
                 .unwrap_or_default();
             let tag = Some(app.upload_tag.trim().to_string()).filter(|tag| !tag.is_empty());
+            if let Some(Err(message)) = tag.as_deref().map(crate::hf_upload::validate_tag) {
+                app.status = Status::error(message);
+                return;
+            }
 
             let config = crate::hf_upload::UploadConfig {
                 file_path: gguf.path.clone(),
