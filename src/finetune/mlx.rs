@@ -85,6 +85,9 @@ impl Batch {
     /// predictions count, exactly as in the candle trainer.
     fn new(tokens: &[u32], mask: &[bool]) -> Option<Self> {
         let n = tokens.len();
+        if n < 2 || mask.len() < n {
+            return None;
+        }
         let keep: Vec<i32> = (0..n - 1)
             .filter(|&j| mask[j + 1])
             .map(|j| j as i32)
@@ -1043,6 +1046,10 @@ mod tests {
         assert_eq!(mlx_vec_i32(&b.keep), vec![1, 2]);
         assert_eq!(mlx_vec_i32(&b.targets), vec![12, 13]);
         assert!(Batch::new(&tokens, &[true, false, false, false, false]).is_none());
+        // Too short to predict anything, or a mask shorter than the tokens.
+        assert!(Batch::new(&[], &[]).is_none());
+        assert!(Batch::new(&[7], &[true]).is_none());
+        assert!(Batch::new(&tokens, &[true, true]).is_none());
     }
 
     fn mlx_vec_i32(a: &Array) -> Vec<i32> {
