@@ -114,11 +114,13 @@ const MLX_AVAILABLE: bool = cfg!(all(target_os = "macos", target_arch = "aarch64
 /// CPU everywhere else. `ONDE_FINETUNE_METAL=1` is kept as an alias for `metal`.
 fn select_backend() -> Result<Backend> {
     let choice = std::env::var("ONDE_FINETUNE_BACKEND").ok();
+    let mut auto_mlx = false;
     let backend = match choice.as_deref().map(str::trim) {
         None | Some("") => {
             if std::env::var("ONDE_FINETUNE_METAL").is_ok() {
                 Backend::Metal
             } else if MLX_AVAILABLE {
+                auto_mlx = true;
                 Backend::Mlx
             } else {
                 Backend::Cpu
@@ -137,6 +139,19 @@ fn select_backend() -> Result<Backend> {
     if backend == Backend::Metal && !cfg!(target_os = "macos") {
         anyhow::bail!("the Metal backend is only available on macOS");
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if backend == Backend::Mlx
+        && let Err(e) = mlx::metal_ready()
+    {
+        // The default pick must not turn a missing mlx.metallib into a failed
+        // run, so it drops to CPU. An explicit request is told why instead.
+        if auto_mlx {
+            eprintln!("[finetune] MLX is unavailable ({e:#}); using CPU");
+            return Ok(Backend::Cpu);
+        }
+        return Err(e);
+    }
+    let _ = auto_mlx;
     Ok(backend)
 }
 
