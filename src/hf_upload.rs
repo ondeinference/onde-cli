@@ -675,11 +675,17 @@ pub fn validate_tag(tag: &str) -> std::result::Result<(), String> {
     {
         return Err(format!("Tag cannot contain {c:?}."));
     }
-    if tag.starts_with(['.', '-', '/']) || tag.ends_with(['.', '/']) {
-        return Err("Tag cannot start with '.', '-' or '/', or end with '.' or '/'.".to_string());
+    if tag.starts_with(['-', '/']) || tag.ends_with(['.', '/']) {
+        return Err("Tag cannot start with '-' or '/', or end with '.' or '/'.".to_string());
     }
-    if tag.ends_with(".lock") || tag.contains("..") || tag.contains("//") || tag.contains("@{") {
-        return Err("Tag cannot contain '..', '//', '@{', or end with '.lock'.".to_string());
+    if tag.contains("..") || tag.contains("//") || tag.contains("@{") {
+        return Err("Tag cannot contain '..', '//' or '@{'.".to_string());
+    }
+    if tag
+        .split('/')
+        .any(|part| part.starts_with('.') || part.ends_with(".lock"))
+    {
+        return Err("No part of the tag can start with '.' or end with '.lock'.".to_string());
     }
     if tag == "@" {
         return Err("Tag cannot be '@'.".to_string());
@@ -753,8 +759,27 @@ mod tests {
             assert!(validate_tag(ok).is_ok(), "{ok} should pass");
         }
         for bad in [
-            "v 1", "v~1", "v^", "a:b", "a?b", "a*b", "a[b", "a\\b", ".hidden", "-x", "/x", "x/",
-            "x.", "x.lock", "a..b", "a//b", "a@{b", "@", "tab\tx",
+            "v 1",
+            "v~1",
+            "v^",
+            "a:b",
+            "a?b",
+            "a*b",
+            "a[b",
+            "a\\b",
+            ".hidden",
+            "-x",
+            "/x",
+            "x/",
+            "x.",
+            "x.lock",
+            "a.lock/b",
+            "a/.hidden",
+            "a..b",
+            "a//b",
+            "a@{b",
+            "@",
+            "tab\tx",
         ] {
             assert!(validate_tag(bad).is_err(), "{bad:?} should fail");
         }
