@@ -489,11 +489,17 @@ impl AdamW {
 /// MLX looks for it next to the `onde` binary (or in `~/.mlx/lib` on the
 /// machine that built it) and the library is only read on first use.
 pub(super) fn metal_ready() -> Result<()> {
+    // catch_unwind stops the unwind but not the default panic hook, which would
+    // print a "thread panicked" trace before the caller's CPU-fallback message.
+    // Silence the hook for the probe, then put the previous one back.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
     let probe = std::panic::catch_unwind(|| {
         mlx_rs::Array::from_slice(&[1.0f32], &[1])
             .eval()
             .map_err(|e| e.to_string())
     });
+    std::panic::set_hook(prev_hook);
     let dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.canonicalize().ok())
