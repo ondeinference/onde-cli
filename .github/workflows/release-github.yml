@@ -122,7 +122,16 @@ jobs:
           cp "./release/${PROJECT_NAME}-${{ matrix.name }}" "staging-brew/${PROJECT_NAME}"
           strip "staging-brew/${PROJECT_NAME}"
 
-          tar -C staging-brew -czf "${ARCHIVE_NAME}" "${PROJECT_NAME}"
+          # The MLX trainer loads its Metal kernels from mlx.metallib next to
+          # the binary, so the Apple Silicon archive carries it. Without it
+          # fine-tuning falls back to CPU.
+          FILES=("${PROJECT_NAME}")
+          if [[ "${{ matrix.target }}" == "aarch64-apple-darwin" ]]; then
+            cp "$(packaging/macos/find-mlx-metallib.sh "${{ matrix.target }}")" staging-brew/mlx.metallib
+            FILES+=(mlx.metallib)
+          fi
+
+          tar -C staging-brew -czf "${ARCHIVE_NAME}" "${FILES[@]}"
 
           shasum -a 256 "${ARCHIVE_NAME}" | awk '{print $1}' > "${ARCHIVE_NAME}.sha256"
 

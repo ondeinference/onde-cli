@@ -50,6 +50,12 @@ onde = "1.2.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { package = "onde-candle-core", version = "0.11.2", features = ["metal", "accelerate"] }
 
+# MLX trainer backend (src/finetune/mlx.rs). Apple Silicon only: mlx-rs builds
+# MLX from source with cmake and needs the Xcode Metal toolchain, so Linux,
+# Windows and Intel Mac builds do not pull it in.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+mlx-rs = "0.34.0"
+
 # ---------------------------------------------------------------------------
 # Local development overrides
 # Uncomment the [patch.crates-io] block below to use path deps while working
