@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" alt="Onde Inference" width="96">
+  <img src="./assets/app-icon.jpg" alt="Onde Inference CLI" width="96">
 </p>
 
 <h1 align="center">Onde Inference CLI</h1>
