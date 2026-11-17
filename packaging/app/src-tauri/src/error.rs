@@ -12,6 +12,8 @@ pub enum CommandError {
     Cancelled(String),
     /// The browser round trip took too long. The UI stays quiet.
     TimedOut(String),
+    /// A folder or file the user chose cannot be used, with a reason they can act on.
+    InvalidChoice(String),
     Internal(String),
 }
 
@@ -22,6 +24,7 @@ impl std::fmt::Display for CommandError {
         | Self::Auth(m)
         | Self::Cancelled(m)
         | Self::TimedOut(m)
+        | Self::InvalidChoice(m)
         | Self::Internal(m)) = self;
         f.write_str(m)
     }
