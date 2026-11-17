@@ -49,10 +49,7 @@ pub struct OndeProject {
 
 /// Root directory for all onde projects.
 pub fn projects_root() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".onde")
-        .join("projects")
+    crate::paths::onde_root().join("projects")
 }
 
 /// Create a new project workspace on disk and return its metadata.

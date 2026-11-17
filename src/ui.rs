@@ -1600,7 +1600,7 @@ fn render_upload_status(frame: &mut Frame, app: &App, area: Rect) {
             );
         }
         None => {
-            if crate::app::HF_TOKEN.is_empty() {
+            if crate::config::HF_TOKEN.is_empty() {
                 frame.render_widget(
                     Paragraph::new("⚠ No HF_TOKEN in .env — upload disabled")
                         .style(Style::new().fg(C_DANGER)),

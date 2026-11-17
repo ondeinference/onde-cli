@@ -1219,7 +1219,7 @@ mod tests {
     /// Returns `None` so the heavy integration test can be skipped on machines
     /// that have not run a fine-tune.
     fn merged_qwen3_dir() -> Option<PathBuf> {
-        let dir = dirs::home_dir()?
+        let dir = crate::paths::real_home()?
             .join("Library/Group Containers/group.com.ondeinference.apps")
             .join("models/hub/models--Qwen--Qwen3-0.6B/snapshots/merged-model");
         if dir.join("config.json").exists() && dir.join("model.safetensors").exists() {
@@ -1231,7 +1231,7 @@ mod tests {
 
     /// Resolve the cached base Qwen3-0.6B snapshot (the hex commit dir), if present.
     fn base_qwen3_dir() -> Option<PathBuf> {
-        let snapshots = dirs::home_dir()?
+        let snapshots = crate::paths::real_home()?
             .join("Library/Group Containers/group.com.ondeinference.apps")
             .join("models/hub/models--Qwen--Qwen3-0.6B/snapshots");
         let entry = std::fs::read_dir(&snapshots).ok()?.flatten().find(|e| {
