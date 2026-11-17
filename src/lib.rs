@@ -7,6 +7,7 @@
 
 pub mod chat;
 pub mod config;
+pub mod eval;
 pub mod finetune;
 pub mod gguf;
 pub mod gresiq;
