@@ -3,11 +3,11 @@
 use smbcloud_gresiq_sdk::{CreateModelParams, Environment, OndeApp, OndeModel};
 
 fn api_key() -> &'static str {
-    crate::app::GRESIQ_API_KEY
+    crate::config::GRESIQ_API_KEY
 }
 
 fn api_secret() -> &'static str {
-    crate::app::GRESIQ_API_SECRET
+    crate::config::GRESIQ_API_SECRET
 }
 
 pub async fn load_apps(token: &str) -> anyhow::Result<Vec<OndeApp>> {

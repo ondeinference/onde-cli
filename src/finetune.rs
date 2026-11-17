@@ -1538,7 +1538,7 @@ mod tests {
                 return Some(p);
             }
         }
-        let snapshots = dirs::home_dir()?
+        let snapshots = crate::paths::real_home()?
             .join("Library/Group Containers/group.com.ondeinference.apps")
             .join("models/hub/models--Qwen--Qwen3-0.6B/snapshots");
         std::fs::read_dir(&snapshots)

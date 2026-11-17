@@ -4,8 +4,8 @@ use {
     crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers},
     futures::StreamExt,
     smbcloud_auth_sdk::{
-        client_credentials::ClientCredentials, login::login_with_client,
-        logout::logout_with_client, me::me_with_client, signup::signup_with_client,
+        login::login_with_client, logout::logout_with_client, me::me_with_client,
+        signup::signup_with_client,
     },
     smbcloud_model::{error_codes::ErrorResponse, login::AccountStatus},
     smbcloud_network::environment::Environment,
@@ -15,23 +15,7 @@ use {
 // ui.rs pulls OndeApp and OndeModel from here so it does not have to depend on the SDK directly.
 pub use smbcloud_gresiq_sdk::{OndeApp, OndeModel};
 
-// Onde is a tenant in smbCloud Auth. These values identify the CLI to the backend.
-// They are baked in at compile time from the environment.
-// Put them in .env for local builds, or inject them as CI secrets.
-pub(crate) const ONDE_APP_ID: &str = env!("ONDE_APP_ID");
-pub(crate) const ONDE_APP_SECRET: &str = env!("ONDE_APP_SECRET");
-pub(crate) const HF_TOKEN: &str = env!("HF_TOKEN");
-
-// GresIQ credentials for the same tenant. These are separate from Auth.
-pub(crate) const GRESIQ_API_KEY: &str = env!("GRESIQ_API_KEY");
-pub(crate) const GRESIQ_API_SECRET: &str = env!("GRESIQ_API_SECRET");
-
-fn credentials() -> ClientCredentials<'static> {
-    ClientCredentials {
-        app_id: ONDE_APP_ID,
-        app_secret: ONDE_APP_SECRET,
-    }
-}
+use crate::config::{HF_TOKEN, credentials};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Screen {

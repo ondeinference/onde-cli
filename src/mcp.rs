@@ -29,10 +29,7 @@ use {
     },
     schemars::JsonSchema,
     serde::Deserialize,
-    smbcloud_auth_sdk::{
-        client_credentials::ClientCredentials, login::login_with_client,
-        logout::logout_with_client, me::me_with_client,
-    },
+    smbcloud_auth_sdk::{login::login_with_client, logout::logout_with_client, me::me_with_client},
     smbcloud_model::login::AccountStatus,
     smbcloud_network::environment::Environment,
 };
@@ -42,13 +39,7 @@ use {
 /// macros carry the tool routing.
 pub struct OndeMcpServer;
 
-/// The baked-in Auth client credentials identifying the CLI to the backend.
-fn credentials() -> ClientCredentials<'static> {
-    ClientCredentials {
-        app_id: crate::app::ONDE_APP_ID,
-        app_secret: crate::app::ONDE_APP_SECRET,
-    }
-}
+use crate::config::credentials;
 
 impl OndeMcpServer {
     pub fn new() -> Self {

@@ -77,7 +77,7 @@ impl CacheSource {
 /// on macOS. Returns `None` on non-macOS or if the directory does not exist.
 #[cfg(target_os = "macos")]
 fn app_group_hub() -> Option<PathBuf> {
-    let p = dirs::home_dir()?
+    let p = crate::paths::real_home()?
         .join("Library")
         .join("Group Containers")
         .join("group.com.ondeinference.apps")
