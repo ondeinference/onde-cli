@@ -11,9 +11,13 @@ set -euo pipefail
 
 target="${1:?usage: find-mlx-metallib.sh <cargo target>}"
 
-# The cargo cache can hold more than one mlx-sys build; take the newest.
+# Cargo's build-dir layout changed: older toolchains write
+# build/mlx-sys-<hash>/out/..., newer ones write build/mlx-sys/<hash>/out/...
+# Look in both. The cargo cache can hold more than one mlx-sys build; take the
+# newest.
 # shellcheck disable=SC2012
-lib="$(ls -t target/"${target}"/release/build/mlx-sys-*/out/build/lib/mlx.metallib 2>/dev/null | head -n 1 || true)"
+lib="$(ls -t target/"${target}"/release/build/mlx-sys-*/out/build/lib/mlx.metallib \
+             target/"${target}"/release/build/mlx-sys/*/out/build/lib/mlx.metallib 2>/dev/null | head -n 1 || true)"
 if [[ -z "${lib}" || ! -f "${lib}" ]]; then
   echo "mlx.metallib not found under target/${target}/release/build" >&2
   exit 1

@@ -94,6 +94,13 @@ jobs:
           rustup target add ${{ matrix.build.TARGET }} --toolchain ${{ env.RUST_TOOLCHAIN }}
           rustup target list --installed
 
+      # mlx-sys refuses to configure below macOS 14, but maturin defaults the
+      # arm64 deployment target to 11.0. The wheel is tagged macosx_14_0_arm64.
+      - name: Set macOS deployment target
+        if: matrix.build.TARGET == 'aarch64-apple-darwin'
+        shell: bash
+        run: echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
+
       - name: Build wheel
         uses: PyO3/maturin-action@v1
         with:
