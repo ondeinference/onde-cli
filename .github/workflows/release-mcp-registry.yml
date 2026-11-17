@@ -52,7 +52,7 @@ jobs:
           mv server.tmp packaging/mcp/server.json
           cat packaging/mcp/server.json
 
-      - name: Verify the published packages carry the ownership marker
+      - name: Verify the published package carries the ownership marker
         shell: bash
         run: |
           # The registry stores metadata only, and validates it by fetching the
