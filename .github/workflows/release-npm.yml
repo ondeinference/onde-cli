@@ -236,3 +236,25 @@ jobs:
           npm install
           npm run build
           npm publish --access public --provenance
+
+  dispatch-mcp-registry:
+    name: Trigger MCP Registry release
+    needs: publish-npm-base
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      # The MCP Registry listing only references the npm package, so it starts
+      # as soon as the base package is live. NuGet is not listed.
+      - name: Trigger MCP Registry release workflow
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = '${{ github.event.inputs.tag }}' || context.ref.replace('refs/tags/', '')
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'release-mcp-registry.yml',
+              ref: tag,
+              inputs: { tag }
+            })
