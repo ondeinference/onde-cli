@@ -114,7 +114,7 @@ jobs:
       - name: Run tests
         run: cargo test --locked --verbose
 
-      # The library must build without the terminal UI; Onde Studio depends on
+      # The library must build without the terminal UI; Onde Desktop depends on
       # it that way.
       - name: Check library without the tui feature
         run: cargo check --locked --no-default-features --lib

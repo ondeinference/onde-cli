@@ -1,7 +1,7 @@
 //! The Onde pipeline as a library: sign in, model library, fine-tune, merge,
 //! GGUF export, local chat, Hugging Face upload and app assignment.
 //!
-//! The `onde` binary (the `tui` feature) and desktop hosts such as Onde Studio
+//! The `onde` binary (the `tui` feature) and desktop hosts such as Onde Desktop
 //! both build on these modules. Long jobs report progress over
 //! `tokio::sync::mpsc` channels and own their threads; nothing here draws UI.
 
