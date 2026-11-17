@@ -1,3 +1,7 @@
+## 0.6.1
+
+- Launcher tracks CLI 0.6.1.
+
 ## 0.6.0
 
 - Launcher tracks CLI 0.6.0.
