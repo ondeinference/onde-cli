@@ -10,10 +10,14 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{OnceLock, RwLock},
 };
 
 static ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Projects can live somewhere else than the root, and that can change while
+/// the host runs: a sandboxed app links the user's `~/.onde` after startup.
+static PROJECTS: RwLock<Option<PathBuf>> = RwLock::new(None);
 
 /// Point the storage root at `root`. Only the first call wins; returns `false`
 /// if a root was already set. Call it before anything reads or writes state.
@@ -32,6 +36,23 @@ pub fn onde_root() -> PathBuf {
         Some(root) => root.to_path_buf(),
         None => default_root(),
     }
+}
+
+/// Point the projects directory at `dir`, or back at `onde_root()/projects`
+/// with `None`. Unlike [`set_root`] this can be called at any time; the
+/// session token is not affected.
+pub fn set_projects_dir(dir: Option<PathBuf>) {
+    *PROJECTS.write().unwrap_or_else(|e| e.into_inner()) = dir;
+}
+
+/// Where projects live: the directory from [`set_projects_dir`], else
+/// `onde_root()/projects`.
+pub fn projects_dir() -> PathBuf {
+    PROJECTS
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_else(|| onde_root().join("projects"))
 }
 
 // The default root honours `$HOME` through `dirs::home_dir()`, so containers,

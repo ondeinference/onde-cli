@@ -31,7 +31,9 @@ use mlx_rs::{
     transforms::{eval, keyed_value_and_grad},
 };
 
-use super::{FineTuneConfig, FineTuneProgress, IndexJson, ModelConfig, TrainingExample};
+use super::{
+    FineTuneConfig, FineTuneProgress, IndexJson, ModelConfig, SkipReason, TrainingExample,
+};
 
 type Params = HashMap<Rc<str>, Array>;
 type Mlx<T> = std::result::Result<T, Exception>;
@@ -549,8 +551,21 @@ pub(super) fn train_mlx(
     let started = Instant::now();
     let mut tokens_seen = 0usize;
 
-    for epoch in 0..config.epochs {
+    let mut cancelled = false;
+    'train: for epoch in 0..config.epochs {
         for (step, batch) in batches.iter().enumerate() {
+            if config.is_cancelled() {
+                cancelled = true;
+                break 'train;
+            }
+            let skip =
+                |loss: f32, grad_norm: Option<f32>, reason: SkipReason| FineTuneProgress::Step {
+                    epoch: epoch + 1,
+                    step: step + 1,
+                    loss,
+                    grad_norm,
+                    skipped: Some(reason),
+                };
             let progress = |loss: f32| FineTuneProgress::Training {
                 epoch: epoch + 1,
                 total_epochs: config.epochs,
@@ -565,6 +580,7 @@ pub(super) fn train_mlx(
                     step + 1
                 );
                 let _ = tx.send(progress(0.0));
+                let _ = tx.send(skip(0.0, None, SkipReason::NoMaskedTokens));
                 continue;
             };
 
@@ -587,6 +603,7 @@ pub(super) fn train_mlx(
                     step + 1
                 );
                 let _ = tx.send(progress(loss_val));
+                let _ = tx.send(skip(loss_val, None, SkipReason::NonFiniteLoss));
                 continue;
             }
 
@@ -610,6 +627,11 @@ pub(super) fn train_mlx(
                     step + 1,
                     batch.seq_len
                 );
+                let _ = tx.send(skip(
+                    loss_val,
+                    Some(total_norm as f32),
+                    SkipReason::BadGradNorm,
+                ));
                 continue;
             }
 
@@ -628,6 +650,13 @@ pub(super) fn train_mlx(
             .map_err(|e| anyhow::anyhow!("evaluating step: {e}"))?;
 
             let _ = tx.send(progress(loss_val));
+            let _ = tx.send(FineTuneProgress::Step {
+                epoch: epoch + 1,
+                step: step + 1,
+                loss: loss_val,
+                grad_norm: Some(total_norm as f32),
+                skipped: None,
+            });
         }
     }
 
@@ -636,6 +665,13 @@ pub(super) fn train_mlx(
         "[finetune] mlx: {tokens_seen} tokens in {secs:.1}s ({:.0} tok/s)",
         tokens_seen as f64 / secs.max(1e-9)
     );
+
+    if cancelled {
+        drop((model, lora, optimizer, batches));
+        let _ = mlx_rs::memory::clear_cache();
+        let _ = tx.send(FineTuneProgress::Cancelled);
+        return Ok(());
+    }
 
     let _ = tx.send(FineTuneProgress::Saving);
     let adapter_path = save_adapter(&lora, &config.output_dir)?;

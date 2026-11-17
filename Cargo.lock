@@ -3812,6 +3812,7 @@ dependencies = [
  "smbcloud-gresiq-sdk",
  "smbcloud-model 0.3.41",
  "smbcloud-network 0.3.41",
+ "tempfile",
  "tokenizers 0.20.4",
  "tokio",
 ]

@@ -5,7 +5,8 @@ mod ui;
 // The pipeline lives in the library. Importing it at the crate root keeps the
 // `crate::chat`, `crate::token`, ... paths in `app`, `ui` and `mcp` valid.
 use onde_cli::{
-    chat, config, finetune, gguf, gresiq, hf, hf_clone, hf_search, hf_upload, merge, project, token,
+    chat, config, finetune, gguf, gresiq, hf, hf_clone, hf_search, hf_upload, merge, models,
+    project, token,
 };
 
 use std::io::{IsTerminal, Write};

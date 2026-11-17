@@ -665,12 +665,21 @@ impl App {
             AuthEvent::FineTuneProgress(progress) => {
                 match &progress {
                     crate::finetune::FineTuneProgress::Done { .. }
-                    | crate::finetune::FineTuneProgress::Failed(_) => {
+                    | crate::finetune::FineTuneProgress::Failed(_)
+                    | crate::finetune::FineTuneProgress::Cancelled => {
                         self.finetune_running = false;
                     }
                     _ => {}
                 }
-                self.finetune_progress = Some(progress);
+                // The screen draws the phase and the Training line. The richer
+                // events are for hosts that chart them.
+                if !matches!(
+                    progress,
+                    crate::finetune::FineTuneProgress::Started { .. }
+                        | crate::finetune::FineTuneProgress::Step { .. }
+                ) {
+                    self.finetune_progress = Some(progress);
+                }
             }
             AuthEvent::HfSearchResults(results) => {
                 self.hf_search_loading = false;
@@ -1468,57 +1477,12 @@ fn handle_key_model_detail(
     }
 }
 
-/// Resolve a HuggingFace model ID to its local cache snapshot directory.
-///
-/// Priority: App Group (onde-cli download cache) → `$HF_HOME` → `~/.cache/huggingface/hub`.
-/// Looks for `{hub}/models--{org}--{name}/snapshots/{hash}/` and returns the first match,
-/// or an empty string if not found.
+/// Resolve a HuggingFace model ID to its local cache snapshot directory, or an
+/// empty string if it is not downloaded. See [`crate::models::resolve_snapshot`].
 fn resolve_hf_cache_path(model_id: &str) -> String {
-    let dir_name = format!("models--{}", model_id.replace('/', "--"));
-
-    // App Group first (that's where onde-cli downloads), then standard HF cache
-    let candidates: Vec<std::path::PathBuf> = {
-        let mut c = Vec::new();
-        #[cfg(target_os = "macos")]
-        if let Some(home) = dirs::home_dir() {
-            c.push(
-                home.join("Library")
-                    .join("Group Containers")
-                    .join("group.com.ondeinference.apps")
-                    .join("models")
-                    .join("hub"),
-            );
-        }
-        // Check HF_HOME env
-        if let Ok(hf_home) = std::env::var("HF_HOME") {
-            c.push(std::path::PathBuf::from(hf_home).join("hub"));
-        }
-        // ~/.cache/huggingface/hub
-        if let Some(home) = dirs::home_dir() {
-            c.push(home.join(".cache").join("huggingface").join("hub"));
-        }
-        c
-    };
-
-    for hub in candidates {
-        let snapshots_dir = hub.join(&dir_name).join("snapshots");
-        if let Ok(entries) = std::fs::read_dir(&snapshots_dir) {
-            // Pick the first directory that looks like a commit hash (hex string).
-            // This skips non-hash dirs like "lora-adapter" that fine-tuning creates.
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    let name = entry.file_name();
-                    let name = name.to_string_lossy();
-                    if name.len() >= 7 && name.chars().all(|c| c.is_ascii_hexdigit()) {
-                        return p.to_string_lossy().to_string();
-                    }
-                }
-            }
-        }
-    }
-
-    String::new()
+    crate::models::resolve_snapshot(model_id)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 /// Scan for existing `lora_adapter.safetensors` files and `.gguf` exports under
@@ -2343,6 +2307,7 @@ fn handle_key_finetune(
                 learning_rate: lr,
                 epochs,
                 max_seq_len: 512,
+                cancel: None,
             };
 
             app.finetune_running = true;
