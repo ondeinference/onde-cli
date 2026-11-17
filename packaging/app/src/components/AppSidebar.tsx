@@ -1,0 +1,57 @@
+import { useEffect, useState } from "react";
+import { getVersion } from "@tauri-apps/api/app";
+import { NAV_ITEMS, type TabId } from "@/components/nav-items";
+
+function useVersionLabel() {
+  const [label, setLabel] = useState("");
+  useEffect(() => {
+    getVersion()
+      .then((v) => v && setLabel(`v${v}`))
+      .catch(() => {});
+  }, []);
+  return label;
+}
+
+export function AppSidebar({
+  open,
+  active,
+  onSelect,
+}: {
+  open: boolean;
+  active: TabId;
+  onSelect: (tab: TabId) => void;
+}) {
+  const versionLabel = useVersionLabel();
+
+  return (
+    <nav
+      id="sidebar-panel"
+      aria-label="Main"
+      inert={!open}
+      className={`fixed bottom-0 left-0 z-40 overflow-hidden border-fog-line bg-paper transition-[width] duration-200 ${open ? "border-r" : "border-r-0"}`}
+      style={{ top: "var(--titlebar-height)", width: open ? "var(--sidebar-width)" : 0 }}
+    >
+      <div className="flex h-full flex-col" style={{ width: "var(--sidebar-width)" }}>
+        <ul className="flex flex-col gap-0.5 p-2">
+          {NAV_ITEMS.map((item) => (
+            <li key={item.id}>
+              <button
+                type="button"
+                onClick={() => onSelect(item.id)}
+                aria-current={active === item.id ? "page" : undefined}
+                className="w-full cursor-pointer rounded-md px-3 py-1.5 text-left text-sm hover:bg-fog-line aria-[current=page]:bg-fog-line aria-[current=page]:font-medium"
+              >
+                {item.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+        {versionLabel && (
+          <p className="mt-auto truncate border-t border-fog-line px-4 py-3 font-mono text-[10px] uppercase tracking-wider tabular-nums text-fog">
+            {versionLabel}
+          </p>
+        )}
+      </div>
+    </nav>
+  );
+}
