@@ -1,7 +1,10 @@
 use std::{fs, path::PathBuf};
 
 fn path() -> Option<PathBuf> {
-    dirs::config_dir().map(|p| p.join("onde").join("token"))
+    match crate::paths::root_override() {
+        Some(root) => Some(root.join("token")),
+        None => dirs::config_dir().map(|p| p.join("onde").join("token")),
+    }
 }
 
 pub fn load() -> Option<String> {

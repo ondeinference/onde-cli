@@ -1,0 +1,29 @@
+<svg
+    width="512"
+    height="512"
+    viewBox="0 0 80 80"
+    fill="none"
+    xmlns="http://www.w3.org/2000/svg"
+>
+  <rect x="0" y="0" width="80" height="80" rx="12" fill="#1B4332" />
+  <text
+      x="40"
+      y="38.8"
+      text-anchor="middle"
+      font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+      font-weight="800"
+      font-size="34.4"
+      letter-spacing="-2"
+      fill="#F5F3EC"
+  >ON</text>
+  <text
+      x="40"
+      y="72"
+      text-anchor="middle"
+      font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+      font-weight="800"
+      font-size="34.4"
+      letter-spacing="-2"
+      fill="#F5F3EC"
+  >DE</text>
+</svg>

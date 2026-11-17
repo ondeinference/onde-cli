@@ -1,0 +1,126 @@
+name: Release Onde Desktop macOS App Store
+
+# Builds the universal Mac App Store app for com.ondeinference.desktop, signs
+# the installer package and uploads it to App Store Connect with altool. It
+# runs packaging/app/scripts/build-appstore.sh, the same script as a local
+# `pnpm appstore`. Attaching the build to a version and submitting it for
+# review stay manual.
+#
+# Trigger: push to release/desktop-macos-appstore, or workflow_dispatch. It
+# never runs on pull requests, so forks cannot reach the secrets.
+#
+# Secrets:
+#   APPLE_DISTRIBUTION_CERTIFICATE (+_PASSWORD)  base64 .p12, "Apple Distribution"
+#   MAS_INSTALLER_CERTIFICATE (+_PASSWORD)       base64 .p12, "3rd Party Mac Developer Installer"
+#   MAS_PROVISIONING_PROFILE                     base64 .provisionprofile
+#   APPLE_API_KEY, APPLE_API_KEY_STRING, APPLE_API_ISSUER   App Store Connect key id, .p8 text, issuer
+#   ONDE_APP_ID, ONDE_APP_SECRET, GRESIQ_API_KEY, GRESIQ_API_SECRET, HF_TOKEN   baked into the build
+#
+# The CFBundleVersion is YYYYMMDD.HHMM (UTC).
+
+on:
+  push:
+    branches:
+      - release/desktop-macos-appstore
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-desktop-macos-appstore
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and upload (macos-appstore)
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      ONDE_APP_ID: ${{ secrets.ONDE_APP_ID }}
+      ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET }}
+      GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY }}
+      GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Read the Rust toolchain
+        run: echo "RUST_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml | head -n 1)" >> "$GITHUB_ENV"
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Setup Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packaging/app/src-tauri
+          key: desktop-macos-appstore
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Install frontend dependencies
+        working-directory: packaging/app
+        run: pnpm install --frozen-lockfile
+
+      - name: Create the signing keychain
+        env:
+          APPLE_DISTRIBUTION_CERTIFICATE: ${{ secrets.APPLE_DISTRIBUTION_CERTIFICATE }}
+          APPLE_DISTRIBUTION_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_DISTRIBUTION_CERTIFICATE_PASSWORD }}
+          MAS_INSTALLER_CERTIFICATE: ${{ secrets.MAS_INSTALLER_CERTIFICATE }}
+          MAS_INSTALLER_CERTIFICATE_PASSWORD: ${{ secrets.MAS_INSTALLER_CERTIFICATE_PASSWORD }}
+        run: |
+          packaging/app/scripts/ci-keychain.sh create \
+            APPLE_DISTRIBUTION_CERTIFICATE APPLE_DISTRIBUTION_CERTIFICATE_PASSWORD \
+            MAS_INSTALLER_CERTIFICATE MAS_INSTALLER_CERTIFICATE_PASSWORD
+
+      - name: Decode the provisioning profile
+        env:
+          MAS_PROVISIONING_PROFILE: ${{ secrets.MAS_PROVISIONING_PROFILE }}
+        run: |
+          profile="$RUNNER_TEMP/embedded.provisionprofile"
+          printf '%s' "$MAS_PROVISIONING_PROFILE" | base64 --decode > "$profile"
+          [ -s "$profile" ] || { echo "::error::MAS_PROVISIONING_PROFILE is empty."; exit 1; }
+          echo "MAS_PROVISIONING_PROFILE_PATH=$profile" >> "$GITHUB_ENV"
+
+      - name: Write the App Store Connect key
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_STRING: ${{ secrets.APPLE_API_KEY_STRING }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          keys="$RUNNER_TEMP/private_keys"
+          mkdir -p "$keys"
+          printf '%s\n' "$APPLE_API_KEY_STRING" > "$keys/AuthKey_${APPLE_API_KEY}.p8"
+          {
+            echo "API_PRIVATE_KEYS_DIR=$keys"
+            echo "ASC_API_KEY=$APPLE_API_KEY"
+            echo "ASC_ISSUER_ID=$APPLE_API_ISSUER"
+          } >> "$GITHUB_ENV"
+
+      - name: Build, sign and upload
+        run: packaging/app/scripts/build-appstore.sh all
+
+      - name: Upload the .pkg
+        uses: actions/upload-artifact@v4
+        with:
+          name: onde-desktop-macos-appstore-pkg
+          path: packaging/app/Onde Desktop.pkg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Remove the signing keychain and secrets
+        if: always()
+        run: |
+          packaging/app/scripts/ci-keychain.sh remove
+          rm -rf "$RUNNER_TEMP/private_keys" "$RUNNER_TEMP/embedded.provisionprofile"
