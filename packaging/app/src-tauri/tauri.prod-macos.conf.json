@@ -1,0 +1,26 @@
+{
+  "productName": "Onde Desktop",
+  "identifier": "com.ondeinference.desktop",
+  "version": "0.6.0",
+  "app": {
+    "windows": [
+      {
+        "title": "Onde Desktop",
+        "width": 1100,
+        "height": 740,
+        "minWidth": 800,
+        "minHeight": 560,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 19, "y": 21 }
+      }
+    ]
+  },
+  "bundle": {
+    "icon": ["icons/icon.icns"],
+    "macOS": {
+      "entitlements": "./Entitlements.plist",
+      "hardenedRuntime": true
+    }
+  }
+}

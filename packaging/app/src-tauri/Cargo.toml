@@ -1,0 +1,36 @@
+[package]
+name = "onde-desktop"
+version = "0.6.0"
+edition = "2024"
+description = "Onde Desktop: fine-tune, chat with and publish models on your Mac."
+license = "MIT OR Apache-2.0"
+publish = false
+
+# An empty workspace keeps this crate out of the onde-cli workspace and gives
+# it its own Cargo.lock.
+[workspace]
+
+[lib]
+name = "onde_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+onde-cli = { path = "../../..", default-features = false }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tauri-plugin-os = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tauri-plugin-oauth = "2"
+url = "2"
+rand = "0.9"
+smbcloud-auth-sdk = "0.3.34"
+smbcloud-model = "0.3.35"
+smbcloud-network = "0.3.35"
+
+[dev-dependencies]
+tempfile = "3"
