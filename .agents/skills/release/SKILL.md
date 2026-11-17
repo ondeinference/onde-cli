@@ -143,7 +143,7 @@ shows up at release time as a failed publish, so don't add one back.
 
 | Channel | Auth | What has to exist |
 |---|---|---|
-| npm | Trusted publishing | A trusted publisher on npmjs.com for each of the 7 packages (`@ondeinference/cli` and `-darwin-arm64`, `-darwin-x64`, `-linux-arm64`, `-linux-x64`, `-windows-arm64`, `-windows-x64`), naming `ondeinference/onde-cli` and `release-npm.yml`. Needs npm 11.5.1 or later and Node 22.14 or later, which the workflow sets up. |
+| npm | Trusted publishing | A trusted publisher on npmjs.com for each of the 7 packages (`@ondeinference/cli` and `-darwin-arm64`, `-darwin-x64`, `-linux-arm64`, `-linux-x64`, `-windows-arm64`, `-windows-x64`), naming `ondeinference/onde-cli` and `release-npm.yml`, with the `npm publish` permission allowed. Needs npm 11.5.1 or later and Node 22.14 or later, which the workflow sets up. |
 | NuGet | Trusted publishing | A policy on nuget.org naming `release-nuget.yml`, and the `NUGET_USER` repo secret (the profile name, not the email). |
 | pub.dev | Automated publishing | Publishing from GitHub Actions enabled in the package's admin page for this repo, tag pattern `v{{version}}`, `workflow_dispatch` events on. Leave "Require GitHub Actions environment" off, since the workflow uses none. |
 | crates.io, PyPI | See `.github/workflows/release-crates.yml` and `release-pypi.yml` | |
@@ -152,6 +152,11 @@ The policy or trusted publisher names the workflow file that contains the publis
 the orchestrator that dispatches it. A new package needs its entry before its first publish.
 npm shows a new entry as "Pending validation" until one publish succeeds, with a deadline
 printed on the page; a publish through the workflow validates it.
+
+Each npm entry must allow the `npm publish` permission. The working state on npmjs.com is an
+entry for `release-npm.yml` whose Permissions column shows `npm publish` and `npm stage publish`
+and whose Status is `Valid`. An entry created without `npm publish` is accepted by npm and still
+fails at publish time, so check that column when you recreate the seven entries.
 
 Don't change a workflow file name without updating those entries.
 
