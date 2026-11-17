@@ -5,7 +5,10 @@ use smbcloud_auth_sdk::{
     login::login_with_client, logout::logout_with_client, me::me_with_client,
     signup::signup_with_client,
 };
-use smbcloud_model::{error_codes::ErrorResponse, login::AccountStatus};
+use smbcloud_model::{
+    error_codes::{ErrorCode, ErrorResponse},
+    login::AccountStatus,
+};
 use smbcloud_network::environment::Environment;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -25,10 +28,17 @@ pub async fn restore() -> Option<Profile> {
     let saved = token::load()?;
     match me_with_client(Environment::Production, credentials(), &saved).await {
         Ok(user) => Some(Profile { email: user.email }),
-        Err(_) => {
+        // Only a rejected token should sign the user out. A network or parse
+        // failure (offline launch, timeout) leaves the token in place so the
+        // next launch with connectivity can still use it.
+        Err(ErrorResponse::Error {
+            error_code: ErrorCode::Unauthorized,
+            ..
+        }) => {
             token::clear();
             None
         }
+        Err(_) => None,
     }
 }
 
