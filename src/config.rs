@@ -5,13 +5,13 @@
 
 use smbcloud_auth_sdk::client_credentials::ClientCredentials;
 
-pub const ONDE_APP_ID: &str = env!("ONDE_APP_ID");
-pub const ONDE_APP_SECRET: &str = env!("ONDE_APP_SECRET");
+const ONDE_APP_ID: &str = env!("ONDE_APP_ID");
+const ONDE_APP_SECRET: &str = env!("ONDE_APP_SECRET");
 pub const HF_TOKEN: &str = env!("HF_TOKEN");
 
 // GresIQ credentials for the same tenant. These are separate from Auth.
-pub const GRESIQ_API_KEY: &str = env!("GRESIQ_API_KEY");
-pub const GRESIQ_API_SECRET: &str = env!("GRESIQ_API_SECRET");
+pub(crate) const GRESIQ_API_KEY: &str = env!("GRESIQ_API_KEY");
+pub(crate) const GRESIQ_API_SECRET: &str = env!("GRESIQ_API_SECRET");
 
 /// The Auth client credentials identifying this build to the backend.
 pub fn credentials() -> ClientCredentials<'static> {

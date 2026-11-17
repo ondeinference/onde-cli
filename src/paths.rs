@@ -34,8 +34,13 @@ pub fn onde_root() -> PathBuf {
     }
 }
 
+// The default root honours `$HOME` through `dirs::home_dir()`, so containers,
+// CI and `env -i`/sudo wrappers that redirect it keep landing their data where
+// `$HOME` points. A sandboxed host whose `$HOME` is a container path calls
+// `set_root()` instead; `real_home()` (passwd) exists only for the Hugging Face
+// cache lookups that must escape the container.
 fn default_root() -> PathBuf {
-    real_home()
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".onde")
 }
@@ -88,7 +93,7 @@ mod tests {
 
     #[test]
     fn default_root_is_dot_onde_under_home() {
-        let home = real_home().expect("home");
+        let home = dirs::home_dir().expect("home");
         assert_eq!(default_root(), home.join(".onde"));
     }
 
@@ -99,19 +104,7 @@ mod tests {
         assert!(home.is_dir());
     }
 
-    // One test owns the process-wide OnceLock: the override wins, and a second
-    // call does not replace it.
-    #[test]
-    fn override_wins_and_first_call_sticks() {
-        let before = onde_root();
-        assert!(root_override().is_none(), "no other test sets the root");
-
-        let dir = std::env::temp_dir().join("onde-paths-test");
-        assert!(set_root(dir.clone()));
-        assert_eq!(onde_root(), dir);
-        assert_ne!(onde_root(), before);
-
-        assert!(!set_root(PathBuf::from("/elsewhere")));
-        assert_eq!(onde_root(), dir);
-    }
+    // The `set_root` override test lives in `tests/paths.rs`: it mutates the
+    // process-wide `ROOT` `OnceLock`, which would leak into every other test in
+    // this binary, so it needs its own process.
 }
