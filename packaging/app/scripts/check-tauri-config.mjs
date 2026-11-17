@@ -66,13 +66,19 @@ for (const [file, id] of Object.entries(overlays)) {
       fail(`${file}: files["${dest}"] is an absolute path`);
     }
   }
-  const ent = readFileSync(join(tauri, mac.entitlements ?? ""), "utf8");
+  if (!mac.entitlements) {
+    fail(`${file}: no entitlements`);
+    continue;
+  }
+  const entPath = join(tauri, mac.entitlements);
+  // check() already reported a missing file, so there is nothing to read.
+  if (!existsSync(entPath)) continue;
+  const ent = readFileSync(entPath, "utf8");
   const wants = ["com.apple.security.network.server"];
   if (file.includes("appstore")) wants.push("com.apple.security.app-sandbox");
   for (const key of wants) {
     if (!new RegExp(`<key>${key}</key>\\s*<true/>`).test(ent)) fail(`${file}: ${mac.entitlements} does not enable ${key}`);
   }
-  if (!merged.bundle?.macOS?.entitlements) fail(`${file}: no entitlements`);
 }
 
 if (errors.length) {
