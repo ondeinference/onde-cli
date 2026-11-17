@@ -148,11 +148,30 @@ jobs:
         shell: bash
         run: |
           version="${{ needs.verify.outputs.version }}"
-          if curl -sSf "https://crates.io/api/v1/crates/onde-cli/${version}" >/dev/null 2>&1; then
+
+          # crates.io answers 403 to requests without an identifying
+          # User-Agent, and curl's default one doesn't count. That made this
+          # check fail on every run, including re-runs for a version that was
+          # already published.
+          status="$(curl -sS -o /dev/null -w '%{http_code}' \
+            -A "onde-cli-release (https://github.com/ondeinference/onde-cli)" \
+            "https://crates.io/api/v1/crates/onde-cli/${version}" || true)"
+          if [ "${status}" = "200" ]; then
             echo "onde-cli ${version} is already on crates.io, skipping publish"
             exit 0
           fi
-          cargo publish --locked
+
+          # The API check can miss (outage, rate limit), so a publish that
+          # cargo rejects as a duplicate also counts as already published.
+          if ! output="$(cargo publish --locked 2>&1)"; then
+            echo "${output}"
+            if grep -q "already exists on crates.io index" <<<"${output}"; then
+              echo "onde-cli ${version} is already on crates.io, skipping publish"
+              exit 0
+            fi
+            exit 1
+          fi
+          echo "${output}"
 
   dispatch-distributions:
     name: Trigger distribution workflows
