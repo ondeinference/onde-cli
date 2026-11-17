@@ -39,8 +39,12 @@ export default function App() {
         }
       />
       <AppSidebar open={sidebarOpen} active={tab} onSelect={(t) => { setTab(t); setShowSignIn(false); }} />
-      {/* <main> is the only scroller; the document itself never scrolls (index.css). */}
+      {/* <main> is the only scroller; the document itself never scrolls (index.css).
+          tabIndex makes it focusable so a keyboard user can Tab to it and a click
+          lands focus here, keeping space/arrow-key scrolling that overflow:hidden
+          takes away from the document. */}
       <main
+        tabIndex={0}
         className={isDesktop ? "app-scroll fixed bottom-0 right-0 transition-[left] duration-200" : "app-scroll h-full"}
         style={isDesktop ? {
           top: "var(--titlebar-height)",
