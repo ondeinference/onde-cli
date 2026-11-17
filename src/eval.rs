@@ -52,6 +52,17 @@ pub struct EvalItem {
 }
 
 impl EvalItem {
+    /// The system prompt this item is asked with. Kinds ending in `-nosys` are
+    /// asked with none, and the scorer files them under the no-system columns,
+    /// so generation and scoring both read it from here.
+    pub fn system_prompt(&self) -> Option<&str> {
+        if self.kind.ends_with("-nosys") {
+            None
+        } else {
+            self.system.as_deref()
+        }
+    }
+
     /// The prompt as a person would read it.
     pub fn display(&self) -> &str {
         self.message.as_deref().unwrap_or(&self.user)
@@ -68,7 +79,7 @@ pub struct ReplyRow {
 /// Project-specific scoring. Every pattern uses Python-style regex syntax
 /// (lookaround is allowed).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ScoringRules {
     /// The assistant's name. An identity reply holds when it contains this and
     /// claims no vendor. `None` skips the identity column.
@@ -177,6 +188,12 @@ pub fn load_items(path: &Path) -> Result<Vec<EvalItem>> {
             !item.user.trim().is_empty(),
             "item {} has an empty prompt",
             item.id
+        );
+        anyhow::ensure!(
+            !(item.kind.ends_with("-nosys") && item.system.is_some()),
+            "item {} is a {:?} item but has a system prompt; remove one",
+            item.id,
+            item.kind
         );
         for p in item.expect.iter().chain(&item.forbid) {
             compile(p).with_context(|| format!("item {}", item.id))?;
@@ -321,7 +338,7 @@ async fn generate(
             if let Some(p) = s.presence_penalty {
                 req = req.set_sampler_presence_penalty(p);
             }
-            if let Some(system) = &item.system {
+            if let Some(system) = item.system_prompt() {
                 req = req.add_message(TextMessageRole::System, system);
             }
             req = req.add_message(TextMessageRole::User, &item.user);
@@ -515,6 +532,23 @@ pub fn score(items: &[EvalItem], replies: &[ReplyRow], rules: &ScoringRules) -> 
         ..Scorecard::default()
     };
     let mut general_words: Vec<usize> = Vec::new();
+    // Compile each item's patterns once. An unreadable pattern is an error:
+    // treating it as "no match" would pass a forbid rule that never ran.
+    let mut patterns: BTreeMap<&str, (Vec<Regex>, Vec<Regex>)> = BTreeMap::new();
+    for item in items {
+        if item.expect.is_empty() && item.forbid.is_empty() {
+            continue;
+        }
+        let build = |list: &[String]| -> Result<Vec<Regex>> {
+            list.iter()
+                .map(|p| compile(p).with_context(|| format!("item {}", item.id)))
+                .collect()
+        };
+        patterns.insert(
+            item.id.as_str(),
+            (build(&item.expect)?, build(&item.forbid)?),
+        );
+    }
 
     for row in replies {
         let base = row.id.split_once('#').map_or(row.id.as_str(), |(b, _)| b);
@@ -533,7 +567,7 @@ pub fn score(items: &[EvalItem], replies: &[ReplyRow], rules: &ScoringRules) -> 
 
         if rules.identity_kinds.contains(&item.kind) {
             let claim = claims_vendor(&c, &reply);
-            let no_system = item.system.is_none() || item.kind.ends_with("-nosys");
+            let no_system = item.system_prompt().is_none();
             let leak = is_match(&c.vendor, &reply);
             if no_system {
                 card.claims_nosys.add(claim, id, true);
@@ -553,15 +587,9 @@ pub fn score(items: &[EvalItem], replies: &[ReplyRow], rules: &ScoringRules) -> 
         {
             m.add(reply.contains(sentence.as_str()), id, false);
         }
-        if !item.expect.is_empty() || !item.forbid.is_empty() {
-            let pass = item
-                .expect
-                .iter()
-                .all(|p| compile(p).is_ok_and(|re| is_match(&re, &reply)))
-                && !item
-                    .forbid
-                    .iter()
-                    .any(|p| compile(p).is_ok_and(|re| is_match(&re, &reply)));
+        if let Some((expect, forbid)) = patterns.get(base) {
+            let pass = expect.iter().all(|re| is_match(re, &reply))
+                && !forbid.iter().any(|re| is_match(re, &reply));
             card.checks
                 .entry(item.kind.clone())
                 .or_default()
@@ -893,5 +921,54 @@ mod tests {
             "{last:?}"
         );
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn a_nosys_item_is_asked_and_scored_without_its_system_prompt() {
+        let mut nosys = item("n", "identity-nosys", Some("persona"));
+        assert_eq!(nosys.system_prompt(), None, "generation drops it");
+        assert_eq!(
+            item("p", "identity", Some("persona")).system_prompt(),
+            Some("persona")
+        );
+        // The scorer files it under no-system by the same rule.
+        nosys.system = None;
+        let card = score(&[nosys], &[reply("n#0", "I am Qwen.")], &rules()).unwrap();
+        assert_eq!((card.claims_nosys.hits, card.claims_prompt.total), (1, 0));
+    }
+
+    #[test]
+    fn loading_rejects_a_nosys_item_that_carries_a_system_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("eval_inputs.json");
+        std::fs::write(
+            &path,
+            r#"[{"id":"a","kind":"identity-nosys","system":"persona","user":"who are you"}]"#,
+        )
+        .unwrap();
+        let err = format!("{:#}", load_items(&path).unwrap_err());
+        assert!(err.contains("has a system prompt"), "{err}");
+    }
+
+    #[test]
+    fn a_pattern_that_does_not_compile_is_an_error_not_a_pass() {
+        let mut broken = item("b", "facts", Some("s"));
+        broken.forbid = vec!["(".into()];
+        let err = score(
+            &[broken],
+            &[reply("b#0", "anything")],
+            &ScoringRules::default(),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("item b"), "{err:#}");
+    }
+
+    #[test]
+    fn a_misspelt_key_in_scoring_json_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("scoring.json");
+        std::fs::write(&path, r#"{"vendors":"openai"}"#).unwrap();
+        let err = format!("{:#}", load_rules(&path).unwrap_err());
+        assert!(err.contains("unknown field"), "{err}");
     }
 }
