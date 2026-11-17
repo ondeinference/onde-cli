@@ -39,14 +39,15 @@ export default function App() {
         }
       />
       <AppSidebar open={sidebarOpen} active={tab} onSelect={(t) => { setTab(t); setShowSignIn(false); }} />
+      {/* <main> is the only scroller; the document itself never scrolls (index.css). */}
       <main
-        className={isDesktop ? "pb-6 transition-[padding] duration-200" : undefined}
+        className={isDesktop ? "app-scroll fixed bottom-0 right-0 transition-[left] duration-200" : "app-scroll h-full"}
         style={isDesktop ? {
-          paddingTop: "var(--titlebar-height)",
-          paddingLeft: sidebarOpen ? "var(--sidebar-width)" : 0,
+          top: "var(--titlebar-height)",
+          left: sidebarOpen ? "var(--sidebar-width)" : 0,
         } : undefined}
       >
-        <div className="mx-auto max-w-2xl px-4 pt-6">
+        <div className="mx-auto max-w-2xl px-4 pt-6 pb-6">
           {showSignIn && !profile ? (
             <SignInForm onSignedIn={(p) => { setProfile(p); setShowSignIn(false); }} />
           ) : (

@@ -25,11 +25,38 @@
   --color-fog-line: var(--color-fog-line);
 }
 
-html, body, #root { height: 100%; }
-body {
+/* The document never scrolls. WKWebView rubber-bands a scrolling document,
+   and the fixed top bar and sidebar bounce with it, which no Mac app does.
+   Content scrolls inside .app-scroll instead. */
+html, body, #root {
   margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+body {
+  position: fixed;
+  inset: 0;
   background: var(--color-paper);
   color: var(--color-ink);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* The one content scroller. `none` stops the elastic overscroll inside the
+   element too (`contain` would only stop it reaching the parent), and pan-y
+   keeps WKWebView from layering its own gesture on top. */
+.app-scroll {
+  overflow-y: auto;
+  overscroll-behavior: none;
+  touch-action: pan-y;
+}
+
+/* Window chrome (top bar, sidebar): dragging it must not paint a text
+   selection, and it uses the arrow cursor like the rest of macOS. */
+.app-chrome {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
 }
