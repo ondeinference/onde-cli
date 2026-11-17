@@ -19,6 +19,8 @@
   "bundle": {
     "icon": ["icons/icon.icns"],
     "macOS": {
+      "minimumSystemVersion": "14.0",
+      "signingIdentity": "791A4557EDEA8D6886F9CCBE848F26533236F5D2",
       "entitlements": "./Entitlements.plist",
       "hardenedRuntime": true
     }

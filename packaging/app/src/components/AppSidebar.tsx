@@ -1,12 +1,17 @@
 import { useEffect, useState } from "react";
 import { getVersion } from "@tauri-apps/api/app";
+import { ipc } from "@/lib/ipc";
 import { NAV_ITEMS, type TabId } from "@/components/nav-items";
 
+// "v0.6.0 (20261117.1203)", "v0.6.0 (dev)" for an unbundled run, and nothing
+// in a plain browser where there is no app to ask.
 function useVersionLabel() {
   const [label, setLabel] = useState("");
   useEffect(() => {
-    getVersion()
-      .then((v) => v && setLabel(`v${v}`))
+    Promise.all([getVersion(), ipc.appBuild()])
+      .then(([version, build]) => {
+        if (version) setLabel(`v${version} (${build ?? "dev"})`);
+      })
       .catch(() => {});
   }, []);
   return label;

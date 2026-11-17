@@ -8,6 +8,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "appstore": "bash scripts/build-appstore.sh",
+    "direct": "bash scripts/build-direct.sh",
     "check:config": "node scripts/check-tauri-config.mjs"
   },
   "dependencies": {

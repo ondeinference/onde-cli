@@ -18,6 +18,7 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .manage(state::PendingSignIn::default())
         .invoke_handler(tauri::generate_handler![
+            commands::app::app_build,
             commands::auth::current_user,
             commands::auth::sign_in,
             commands::auth::sign_up,
