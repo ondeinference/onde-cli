@@ -269,13 +269,22 @@ enum Outcome {
 /// Validate the name and create `{run_dir}/lora`. Fails if the run exists.
 fn prepare_dir(spec: &RunSpec, run_dir: &Path) -> Result<()> {
     validate_run_name(&spec.name)?;
-    anyhow::ensure!(
-        !run_dir.exists(),
-        "run {:?} already exists; pick another name",
-        spec.name
-    );
+    if let Some(runs_dir) = run_dir.parent() {
+        std::fs::create_dir_all(runs_dir)
+            .with_context(|| format!("creating {}", runs_dir.display()))?;
+    }
+    // `create_dir` fails when the directory exists, so of two runs started with
+    // the same name at the same moment exactly one gets it. Checking `exists()`
+    // first and creating after would let both through.
+    match std::fs::create_dir(run_dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::bail!("run {:?} already exists; pick another name", spec.name)
+        }
+        Err(e) => return Err(e).with_context(|| format!("creating {}", run_dir.display())),
+    }
     let lora_dir = run_dir.join("lora");
-    std::fs::create_dir_all(&lora_dir).with_context(|| format!("creating {}", lora_dir.display()))
+    std::fs::create_dir(&lora_dir).with_context(|| format!("creating {}", lora_dir.display()))
 }
 
 fn is_cancelled(cancel: &Option<Arc<AtomicBool>>) -> bool {
@@ -306,6 +315,36 @@ fn run(
         return Ok(Outcome::Finished);
     }
 
+    let outcome = merge_and_export(spec, run_dir, adapter_path, cancel, record, tx);
+    // On every way out: a cancelled or failed run would otherwise leave a
+    // full-precision merged model (many GB) that nothing records or cleans up.
+    if !spec.keep_merged {
+        remove_merged(run_dir);
+    }
+    outcome
+}
+
+/// Delete `merged/`, best effort. The GGUF is already written when this runs on
+/// success, so a removal that fails must not turn a finished export into a
+/// failed run. It is only worth a note on stderr.
+fn remove_merged(run_dir: &Path) {
+    let merged_dir = run_dir.join("merged");
+    if let Err(e) = std::fs::remove_dir_all(&merged_dir)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        eprintln!("[pipeline] could not remove {}: {e}", merged_dir.display());
+    }
+}
+
+/// Merge the adapter into the base weights, then export a GGUF.
+fn merge_and_export(
+    spec: &RunSpec,
+    run_dir: &Path,
+    adapter_path: PathBuf,
+    cancel: &Option<Arc<AtomicBool>>,
+    record: &mut RunRecord,
+    tx: &UnboundedSender<RunProgress>,
+) -> Result<Outcome> {
     // ---- merge ----
     if is_cancelled(cancel) {
         return Ok(Outcome::Cancelled);
@@ -371,10 +410,6 @@ fn run(
             Some(_) => {}
             None => anyhow::bail!("the export thread ended without a result"),
         }
-    }
-    if !spec.keep_merged {
-        std::fs::remove_dir_all(&merged_dir)
-            .with_context(|| format!("removing {}", merged_dir.display()))?;
     }
     Ok(Outcome::Finished)
 }
@@ -502,7 +537,12 @@ fn phase(tx: &UnboundedSender<RunProgress>, label: &str) {
 
 fn write_record(run_dir: &Path, record: &RunRecord) -> Result<()> {
     let json = serde_json::to_string_pretty(record).context("serializing run.json")?;
-    std::fs::write(run_dir.join("run.json"), json)
+    // Write beside it and rename. A reader (`list_runs` while the run is going)
+    // sees the old file or the new one, never a truncated one, and a crash
+    // cannot leave a half-written record.
+    let tmp = run_dir.join("run.json.tmp");
+    std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, run_dir.join("run.json"))
         .with_context(|| format!("writing {}/run.json", run_dir.display()))
 }
 
@@ -651,5 +691,37 @@ mod tests {
                 .status,
             RunStatus::Failed
         );
+    }
+
+    #[test]
+    fn run_json_is_replaced_without_leaving_a_temp_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut record = RunRecord::new(&spec("a"));
+        write_record(tmp.path(), &record).unwrap();
+        record.steps = 7;
+        write_record(tmp.path(), &record).unwrap();
+        assert_eq!(read_record(tmp.path()).unwrap().steps, 7);
+        assert!(!tmp.path().join("run.json.tmp").exists());
+    }
+
+    #[test]
+    fn the_merged_model_is_removed_and_a_missing_one_is_fine() {
+        let tmp = tempfile::tempdir().unwrap();
+        remove_merged(tmp.path()); // nothing there: no panic, no error
+        let merged = tmp.path().join("merged");
+        std::fs::create_dir_all(&merged).unwrap();
+        std::fs::write(merged.join("model.safetensors"), b"x").unwrap();
+        remove_merged(tmp.path());
+        assert!(!merged.exists());
+    }
+
+    #[test]
+    fn two_runs_with_one_name_cannot_both_get_the_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("runs/same");
+        let s = spec("same");
+        assert!(prepare_dir(&s, &dir).is_ok());
+        let again = prepare_dir(&s, &dir).unwrap_err();
+        assert!(format!("{again:#}").contains("already exists"), "{again:#}");
     }
 }
