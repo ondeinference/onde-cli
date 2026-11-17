@@ -40,7 +40,9 @@ export function ProjectList({
               </p>
             </div>
             <div className="shrink-0 text-right text-xs tabular-nums text-fog">
-              <p>{p.dataset_rows == null ? "No dataset" : `${p.dataset_rows} rows`}</p>
+              <p className={p.dataset === "invalid" ? "text-red-600" : undefined}>
+                {p.dataset === "ready" ? `${p.dataset_rows} rows` : p.dataset === "invalid" ? "Dataset has errors" : "No dataset"}
+              </p>
               <p>
                 {p.runs === 1 ? "1 run" : `${p.runs} runs`}
                 {p.latest_run ? ` · ${p.latest_run}` : ""}

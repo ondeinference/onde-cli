@@ -84,8 +84,10 @@ impl Links {
         });
         match opened {
             Ok((dir, resolved)) => {
+                // Refresh from the resolved URL while access is held: a URL
+                // made from the path alone has no security scope.
                 if resolved.stale
-                    && let Ok(fresh) = bookmark::create(&resolved.path)
+                    && let Ok(fresh) = resolved.access.refresh_bookmark()
                 {
                     let _ = write_file(&self.file, Some(&fresh));
                 }

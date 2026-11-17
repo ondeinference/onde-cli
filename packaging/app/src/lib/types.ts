@@ -44,6 +44,7 @@ export interface ProjectSummary {
   repo_id: string;
   base_model_id: string;
   created_at: number;
+  dataset: "missing" | "invalid" | "ready";
   dataset_rows: number | null;
   runs: number;
   latest_run: string | null;

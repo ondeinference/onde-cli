@@ -12,13 +12,24 @@ use onde_cli::{
 };
 use serde::Serialize;
 
+/// Whether a project has a usable dataset, for the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DatasetKind {
+    Missing,
+    /// `train.jsonl` exists but does not validate; the page shows why.
+    Invalid,
+    Ready,
+}
+
 /// One row of the project list.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProjectSummary {
     pub repo_id: String,
     pub base_model_id: String,
     pub created_at: u64,
-    /// `None` when there is no dataset or it does not validate.
+    pub dataset: DatasetKind,
+    /// Rows of a valid dataset.
     pub dataset_rows: Option<usize>,
     pub runs: usize,
     pub latest_run: Option<String>,
@@ -77,21 +88,24 @@ fn dataset_state(path: &Path) -> DatasetState {
     }
 }
 
+fn dataset_kind(path: &Path) -> (DatasetKind, Option<usize>) {
+    match dataset_state(path) {
+        DatasetState::Missing => (DatasetKind::Missing, None),
+        DatasetState::Invalid { .. } => (DatasetKind::Invalid, None),
+        DatasetState::Ready(info) => (DatasetKind::Ready, Some(info.rows)),
+    }
+}
+
 fn summary(repo_id: String, meta: ProjectMeta) -> ProjectSummary {
-    let (dataset_rows, runs) = match project::load_project(&repo_id) {
-        Ok(p) => {
-            let rows = match dataset_state(&p.dataset_path) {
-                DatasetState::Ready(info) => Some(info.rows),
-                _ => None,
-            };
-            (rows, project::list_runs(&p))
-        }
-        Err(_) => (None, Vec::new()),
+    let ((dataset, dataset_rows), runs) = match project::load_project(&repo_id) {
+        Ok(p) => (dataset_kind(&p.dataset_path), project::list_runs(&p)),
+        Err(_) => ((DatasetKind::Missing, None), Vec::new()),
     };
     ProjectSummary {
         repo_id,
         base_model_id: meta.base_model_id,
         created_at: meta.created_at,
+        dataset,
         dataset_rows,
         latest_run: runs.first().map(|r| r.name.clone()),
         runs: runs.len(),
@@ -176,6 +190,17 @@ mod tests {
         }
         std::fs::write(&file, "{\"text\":\"hi\"}\n").unwrap();
         assert!(matches!(dataset_state(&file), DatasetState::Ready(i) if i.rows == 1));
+    }
+
+    #[test]
+    fn the_list_tells_a_missing_dataset_from_a_broken_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("train.jsonl");
+        assert_eq!(dataset_kind(&file), (DatasetKind::Missing, None));
+        std::fs::write(&file, "not json\n").unwrap();
+        assert_eq!(dataset_kind(&file), (DatasetKind::Invalid, None));
+        std::fs::write(&file, "{\"text\":\"a\"}\n{\"text\":\"b\"}\n").unwrap();
+        assert_eq!(dataset_kind(&file), (DatasetKind::Ready, Some(2)));
     }
 
     #[test]
