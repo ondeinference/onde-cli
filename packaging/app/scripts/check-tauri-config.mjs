@@ -54,6 +54,24 @@ check("tauri.conf.json", base, null);
 for (const [file, id] of Object.entries(overlays)) {
   const merged = mergePatch(base, read(join(tauri, file)));
   check(file, merged, id);
+  const mac = merged.bundle?.macOS ?? {};
+  // Tauri exports this as MACOSX_DEPLOYMENT_TARGET (default 10.13), and the
+  // mlx-sys build refuses anything below 14.
+  if (parseFloat(mac.minimumSystemVersion ?? "0") < 14) fail(`${file}: minimumSystemVersion must be 14.0 or newer for MLX`);
+  if (!mac.signingIdentity) fail(`${file}: no signingIdentity`);
+  // The provisioning profile is injected by the build scripts. A committed
+  // path would be one person's disk and would leak where profiles are kept.
+  for (const [dest, src] of Object.entries(mac.files ?? {})) {
+    if (String(src).startsWith("/") || String(src).startsWith("~")) {
+      fail(`${file}: files["${dest}"] is an absolute path`);
+    }
+  }
+  const ent = readFileSync(join(tauri, mac.entitlements ?? ""), "utf8");
+  const wants = ["com.apple.security.network.server"];
+  if (file.includes("appstore")) wants.push("com.apple.security.app-sandbox");
+  for (const key of wants) {
+    if (!new RegExp(`<key>${key}</key>\\s*<true/>`).test(ent)) fail(`${file}: ${mac.entitlements} does not enable ${key}`);
+  }
   if (!merged.bundle?.macOS?.entitlements) fail(`${file}: no entitlements`);
 }
 
