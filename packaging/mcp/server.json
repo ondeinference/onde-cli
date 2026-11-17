@@ -28,24 +28,6 @@
           "isRequired": true
         }
       ]
-    },
-    {
-      "registryType": "nuget",
-      "registryBaseUrl": "https://api.nuget.org/v3/index.json",
-      "identifier": "Onde.Cli",
-      "version": "0.6.0",
-      "runtimeHint": "dnx",
-      "transport": {
-        "type": "stdio"
-      },
-      "packageArguments": [
-        {
-          "type": "named",
-          "name": "--mcp",
-          "description": "Run the CLI as an MCP server over stdio instead of launching the TUI.",
-          "isRequired": true
-        }
-      ]
     }
   ],
   "_meta": {

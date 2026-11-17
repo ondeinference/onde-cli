@@ -4,7 +4,7 @@ The Onde CLI's MCP server (`onde --mcp`, added in v0.4.0) is listed in the
 [official MCP Registry](https://registry.modelcontextprotocol.io) as
 **`io.github.ondeinference/onde-cli`**. The registry is a metadata index — it
 doesn't host binaries — so the listing points at packages we already publish to
-npm and NuGet, and clients that browse the registry can offer a one-click
+npm, and clients that browse the registry can offer a one-click
 install.
 
 ## What makes up the listing
@@ -13,17 +13,15 @@ install.
 | --- | --- |
 | Server metadata | [`server.json`](../packaging/mcp/server.json) |
 | npm ownership proof | `mcpName` in `packaging/npm/package-main.json.tmpl`, copied verbatim into the published manifest by `packaging/npm/scripts/render-main-package.cjs` |
-| NuGet ownership proof | `<!-- mcp-name: ... -->` in `packaging/nuget/onde-cli/README.md` |
 | Publishing | `.github/workflows/release-mcp-registry.yml` |
 
-The registry checks each listed package for a marker naming the server. If the
+The registry checks the listed package for a marker naming the server. If the
 marker is missing or doesn't match `name` in `server.json`, publishing fails
 with "Registry validation failed for package".
 
 The markers ship *inside* the published artifacts, so they have to be in place
-before the npm and NuGet packages are built. A version published before the
-marker landed can never be listed, since neither registry lets you overwrite a
-version. The publish workflow checks the real published artifacts, not just the
+before the npm package is built. A version published before the marker landed
+can never be listed, since npm doesn't let you overwrite a version. The publish workflow checks the real published artifacts, not just the
 sources in this repo, and stops early if a marker is missing.
 
 **v0.4.0 cannot be listed.** It shipped the MCP server, and its NuGet package
@@ -48,9 +46,12 @@ has to spell it identically.
 - **npm** — `@ondeinference/cli`, launched as `npx @ondeinference/cli --mcp`.
   The package declares a single binary (`onde`), so `npx` resolves it despite
   the name difference.
-- **NuGet** — `Onde.Cli`, launched as `dnx Onde.Cli --mcp`.
 
-PyPI is deliberately not listed. The `onde-cli` wheel installs its executable as
+NuGet and PyPI are deliberately not listed. NuGet validates a pushed package
+for 5 to 15 minutes before it is queryable, which kept holding the listing
+back, and the registry only needs one package.
+
+PyPI in particular can't be launched from the registry. The `onde-cli` wheel installs its executable as
 `onde` (maturin `bindings = "bin"`), and `uvx onde-cli` looks for an executable
 matching the distribution name, so the launch command the registry hands to
 clients wouldn't work. Adding PyPI would mean shipping an extra console script
@@ -59,23 +60,19 @@ no registry package type at all.
 
 ## Releasing a new version
 
-`server.json` carries the version twice, once for the server and once per
-package. The publish workflow rewrites both from the tag it was given, so the
-committed values are documentation rather than the source of truth — keep them
+`server.json` carries the version twice, once for the server and once for the
+npm package. The publish workflow rewrites both from the tag it was given, so the
+committed values are documentation rather than the source of truth. Keep them
 pointing at the next intended listing.
 
 Publishing is chained off the release: pushing a `v*` tag runs the crates.io
-workflow, which fans out to the distribution workflows, and **NuGet Release**
-triggers **MCP Registry Release** once its publish job succeeds. It hangs off
-NuGet rather than the fan-out because the listing needs both npm and NuGet live
-at that version, and NuGet is the slower of the two — in the v0.4.0 release,
-NuGet took 55 minutes against npm's 35.
+workflow, which fans out to the distribution workflows, and **NPM Release**
+triggers **MCP Registry Release** once the base package is published. The listing
+only references npm, so it does not wait for NuGet.
 
 The registry fetches the package metadata during publish, so
-`@ondeinference/cli@<version>` and `Onde.Cli <version>` must already exist. npm
-is queryable within seconds of publishing; nuget.org validates first and takes
-roughly 5–15 minutes to reach the flat container. The workflow polls both for up
-to ten minutes rather than failing on that gap.
+`@ondeinference/cli@<version>` must already exist. The workflow polls npm for up
+to ten minutes to cover a manual dispatch made while npm is still publishing.
 
 To publish by hand — a re-run after a transient failure, say — dispatch it with
 the tag:

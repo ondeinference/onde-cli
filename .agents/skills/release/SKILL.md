@@ -28,8 +28,8 @@ These files pin the crate version and must all move together:
 - `packaging/pub/onde_cli/CHANGELOG.md` — a `## X.Y.Z` entry at the top. pub.dev's dry-run
   treats a changelog that doesn't mention the version as a warning and exits non-zero, which
   stopped the pub.dev releases for v0.4.2 to v0.5.0.
-- `packaging/mcp/server.json` — three occurrences: top-level `version`, and the npm and NuGet
-  `packages[].version` entries (search for the old version string to catch all)
+- `packaging/mcp/server.json` — two occurrences: top-level `version` and the npm
+  `packages[].version` entry (search for the old version string to catch both)
 
 `docs/mcp-registry.md` and `.github/workflows/release-mcp-registry.yml` mention
 past versions only as historical examples — do not bump those.
@@ -126,9 +126,9 @@ Pushing `vX.Y.Z` triggers a three-level chain. There is no separate "publish" st
 2. `release-github.yml` (CLI Release GitHub) then dispatches **Homebrew, pub.dev, Scoop and winget**
    once the release assets exist. A failed Scoop or winget dispatch only logs a warning
    (`core.warning`), so it is easy to miss.
-3. `release-nuget.yml` (CLI Release NuGet) then dispatches the **MCP Registry Release**, which
-   waits for the npm and NuGet packages at this version. A failed npm or NuGet publish
-   therefore also fails the MCP Registry run.
+3. `release-npm.yml` (CLI Release NPM) then dispatches the **MCP Registry Release** once the base
+   package is published. The registry lists only the npm package, so NuGet is not involved. A
+   failed npm publish means the MCP Registry run never starts.
 
 pub.dev depends on a setting. Its automated publishing only publishes from the events enabled in
 the package's admin page. `release-pub.yml` is dispatched, so "Enable publishing from
@@ -215,7 +215,7 @@ After the pipeline finishes, spot-check the fan-out (all idempotent, safe to re-
 - pub.dev publishing was moved to tag pushes for a while (`workflow_dispatch` was off in its
   settings), which took it out of the fan-out. It is dispatched again, which needs
   `workflow_dispatch` on in the pub.dev settings.
-- A failed npm release leaves the MCP Registry run failing with "still not on npm after 10
-  minutes". Fix npm, publish it, then re-dispatch the MCP Registry release for the tag.
+- A failed npm release means the MCP Registry run never starts, because npm dispatches it. Fix
+  npm, publish it, then dispatch the MCP Registry release for the tag by hand.
 - Re-running pub.dev for an old tag. It checks out that tag, so it uses that tag's pubspec and
   changelog and fails if they predate the changelog rule.

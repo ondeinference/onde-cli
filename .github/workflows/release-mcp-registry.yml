@@ -43,9 +43,6 @@ jobs:
           # rendered at release time from this template.
           grep -q "\"mcpName\": \"${server_name}\"" packaging/npm/package-main.json.tmpl
 
-          # NuGet proves ownership through an `mcp-name:` marker in the package README.
-          grep -q "mcp-name: ${server_name}" packaging/nuget/onde-cli/README.md
-
       - name: Set the version in server.json
         shell: bash
         run: |
@@ -58,14 +55,15 @@ jobs:
       - name: Verify the published packages carry the ownership marker
         shell: bash
         run: |
-          # The registry stores metadata only, and validates it by fetching each
+          # The registry stores metadata only, and validates it by fetching the
           # listed package and looking for a marker naming this server. Checking
           # the sources isn't enough: a package published before the marker
-          # landed will still be missing it. Both comparisons are case-sensitive.
+          # landed will still be missing it. The comparison is case-sensitive.
           server_name="$(jq -r '.name' packaging/mcp/server.json)"
 
-          # npm is queryable within seconds of publishing, but the npm release
-          # workflow may still be building its platform packages when this runs.
+          # release-npm.yml dispatches this workflow after the base package is
+          # published, so the package is normally there already. The poll covers
+          # a manual dispatch made while npm is still publishing.
           for attempt in $(seq 1 20); do
             if npm view "@ondeinference/cli@${RELEASE_VERSION}" version; then
               break
@@ -84,31 +82,6 @@ jobs:
             echo "npm versions are immutable — cut a new release with the marker in place." >&2
             exit 1
           fi
-
-          # nuget.org validates a package before it reaches the flat container,
-          # so a version pushed minutes ago is not queryable yet. Poll instead
-          # of failing the release on that race.
-          for attempt in $(seq 1 20); do
-            nuget_versions="$(curl -fsSL "https://api.nuget.org/v3-flatcontainer/onde.cli/index.json")"
-            if echo "${nuget_versions}" | jq -e --arg v "${RELEASE_VERSION}" '.versions | index($v)' >/dev/null; then
-              echo "Onde.Cli ${RELEASE_VERSION} is indexed."
-              break
-            fi
-            if [ "${attempt}" -eq 20 ]; then
-              echo "Onde.Cli ${RELEASE_VERSION} is still not indexed on nuget.org after 10 minutes." >&2
-              exit 1
-            fi
-            echo "Waiting for nuget.org to index ${RELEASE_VERSION} (attempt ${attempt}/20)..."
-            sleep 30
-          done
-
-          curl -fsSL -o package.nupkg \
-            "https://api.nuget.org/v3-flatcontainer/onde.cli/${RELEASE_VERSION}/onde.cli.${RELEASE_VERSION}.nupkg"
-          if ! unzip -p package.nupkg README.md | grep -q "mcp-name: ${server_name}"; then
-            echo "Onde.Cli ${RELEASE_VERSION} README is missing the 'mcp-name: ${server_name}' marker." >&2
-            exit 1
-          fi
-          rm package.nupkg
 
       - name: Install mcp-publisher
         shell: bash
