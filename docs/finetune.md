@@ -43,9 +43,16 @@ Press `Enter` to start. In a healthy run, loss usually starts dropping by epoch 
 For rank 8 on a 0.6B model, the adapter is about 1.5 MB. From the fine-tune complete screen:
 
 - `m` to merge the adapter into the base model
-- `g` to export the merged model to GGUF
+- `g` to export the merged model to GGUF as Q8_0
+- `G` (Shift+g) to export it as Q4_K_M, about a quarter the size of F16
 
 The resulting GGUF loads directly in the [Onde SDK](https://ondeinference.com/sdk) for on-device AI inference.
+
+Q4_K_M follows llama.cpp's mix: Q4_K for most weights, Q6_K for `attn_v` and `ffn_down` in the first and last eighth of the layers and every third layer between, and Q6_K for the output head (the token embedding when the model ties them, in which case no separate `output.weight` is written). Norms and biases stay F32. Tensors whose row length is not a multiple of 256 fall back to Q8_0.
+
+## Uploading
+
+Open the exported GGUF from the model's artifacts and press Enter to upload it to the repo named in the field. New repos are created private; Ctrl+P switches to public. Tab moves the cursor between the repo name and an optional tag (for example `v1`), which is created on `main` after the commit. If the project directory has a `README.md` or `LICENSE`, they go into the same commit as the model. The visibility flag only applies when the upload creates the repo; an existing repo keeps its current setting.
 
 ## Supported base models
 

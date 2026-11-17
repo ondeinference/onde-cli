@@ -1,6 +1,6 @@
 [package]
 name = "onde-cli"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 description = "Terminal UI to fine-tune model and manage your Onde Inference account."
 license = "MIT OR Apache-2.0"
@@ -40,6 +40,7 @@ candle-nn = { package = "onde-candle-nn", version = "0.11.2" }
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
 half = "2"
 sha2 = "0.10"
 # onde = { path = "../onde" }
@@ -49,6 +50,12 @@ onde = "1.2.2"
 # macOS these are added on top of the base candle-core dep above.
 [target.'cfg(target_os = "macos")'.dependencies]
 candle-core = { package = "onde-candle-core", version = "0.11.2", features = ["metal", "accelerate"] }
+
+# MLX trainer backend (src/finetune/mlx.rs). Apple Silicon only: mlx-rs builds
+# MLX from source with cmake and needs the Xcode Metal toolchain, so Linux,
+# Windows and Intel Mac builds do not pull it in.
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+mlx-rs = "0.34.0"
 
 # ---------------------------------------------------------------------------
 # Local development overrides
