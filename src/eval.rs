@@ -274,18 +274,37 @@ pub fn start_generate(
                 return;
             }
         };
-        let event = match runtime.block_on(generate(&spec, &cancel, &tx)) {
-            Ok(Some(rows)) => match write_atomic(&spec.output, &rows) {
+        // A panic while loading or streaming (the inference engine is a large
+        // dependency) would drop `tx` and close the channel without a word.
+        // Catch it so the host gets a terminal event that says what happened.
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            runtime.block_on(generate(&spec, &cancel, &tx))
+        }));
+        let event = match ran {
+            Ok(Ok(Some(rows))) => match write_atomic(&spec.output, &rows) {
                 Ok(()) => GenerateProgress::Done {
                     output: spec.output.clone(),
                 },
                 Err(e) => GenerateProgress::Failed(format!("{e:#}")),
             },
-            Ok(None) => GenerateProgress::Cancelled,
-            Err(e) => GenerateProgress::Failed(format!("{e:#}")),
+            Ok(Ok(None)) => GenerateProgress::Cancelled,
+            Ok(Err(e)) => GenerateProgress::Failed(format!("{e:#}")),
+            Err(panic) => GenerateProgress::Failed(format!(
+                "generation stopped unexpectedly: {}",
+                panic_message(&panic)
+            )),
         };
         let _ = tx.send(event);
     });
+}
+
+/// The text of a caught panic, when it carries one.
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
+    panic
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| panic.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no message".to_string())
 }
 
 async fn generate(
@@ -349,6 +368,11 @@ async fn generate(
                 .with_context(|| format!("starting item {}", item.id))?;
             let mut reply = String::new();
             while let Some(response) = stream.next().await {
+                // Check on every chunk, so a cancel does not wait for the end
+                // of a long reply. The model load itself cannot be interrupted.
+                if cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed)) {
+                    return Ok(None);
+                }
                 match response {
                     Response::Chunk(chunk) => {
                         if let Some(choice) = chunk.choices.first()
@@ -465,7 +489,12 @@ impl Compiled {
             wrong_names: rules
                 .wrong_names
                 .iter()
-                .map(|n| compile(&format!(r"(?i)\b{}\b", fancy_regex::escape(n))))
+                .map(|n| {
+                    // `\b\b` matches at every word boundary, so an empty entry
+                    // would flag every identity reply.
+                    anyhow::ensure!(!n.trim().is_empty(), "wrong_names has an empty entry");
+                    compile(&format!(r"(?i)\b{}\b", fancy_regex::escape(n)))
+                })
                 .collect::<Result<_>>()?,
             misspell: rules
                 .misspell
@@ -970,5 +999,29 @@ mod tests {
         std::fs::write(&path, r#"{"vendors":"openai"}"#).unwrap();
         let err = format!("{:#}", load_rules(&path).unwrap_err());
         assert!(err.contains("unknown field"), "{err}");
+    }
+
+    #[test]
+    fn an_empty_wrong_name_is_an_error_not_a_match_for_everything() {
+        let rules = ScoringRules {
+            name: Some("Onde".into()),
+            wrong_names: vec!["Onde Onde".into(), " ".into()],
+            ..ScoringRules::default()
+        };
+        let err = score(
+            &[item("a", "identity", Some("p"))],
+            &[reply("a#0", "I'm Onde.")],
+            &rules,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("empty entry"), "{err:#}");
+    }
+
+    #[test]
+    fn a_caught_panic_keeps_its_message() {
+        let caught = std::panic::catch_unwind(|| panic!("model blew up")).unwrap_err();
+        assert_eq!(panic_message(&*caught), "model blew up");
+        let caught = std::panic::catch_unwind(|| panic!("{} {}", "formatted", 7)).unwrap_err();
+        assert_eq!(panic_message(&*caught), "formatted 7");
     }
 }
