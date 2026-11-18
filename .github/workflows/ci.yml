@@ -12,7 +12,7 @@ on:
       - ".agents/**"
       - ".claude/**"
       - "docs/**"
-      - "LICENSE"
+      - "LICENSE-*"
       - "assets/**"
   pull_request:
     paths-ignore:
@@ -20,7 +20,7 @@ on:
       - ".agents/**"
       - ".claude/**"
       - "docs/**"
-      - "LICENSE"
+      - "LICENSE-*"
       - "assets/**"
   workflow_dispatch:
 

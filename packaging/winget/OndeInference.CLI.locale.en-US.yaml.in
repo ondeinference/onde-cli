@@ -8,7 +8,7 @@ PublisherSupportUrl: https://github.com/@REPO@/issues
 PackageName: Onde CLI
 PackageUrl: https://ondeinference.com/cli
 License: MIT OR Apache-2.0
-LicenseUrl: https://github.com/@REPO@/blob/main/LICENSE
+LicenseUrl: https://github.com/@REPO@/blob/main/LICENSE-APACHE
 ShortDescription: Terminal UI to fine-tune models and manage your Onde Inference account.
 Description: |-
   Onde CLI is a terminal user interface for Onde Inference. Fine-tune

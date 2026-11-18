@@ -150,4 +150,4 @@ Dual-licensed under [MIT](https://github.com/ondeinference/onde-cli/blob/main/LI
 
 ## Copyright
 
-© 2026 [Splitfire AB](https://5mb.app) ([Onde Inference](https://ondeinference.com)).
+© 2026 Seto Elkahfi ([Onde Inference](https://ondeinference.com)). Distributed by [Splitfire AB](https://5mb.app).
