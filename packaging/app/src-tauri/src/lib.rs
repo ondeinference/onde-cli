@@ -30,6 +30,7 @@ pub fn run() {
         .manage(state::PendingSignIn::default())
         .manage(links)
         .manage(state_downloads::Downloads::default())
+        .manage(desktop::jobs::Jobs::default())
         .invoke_handler(tauri::generate_handler![
             commands::app::app_build,
             commands::links::projects_location,
@@ -40,6 +41,9 @@ pub fn run() {
             commands::base_models::download_base_model,
             commands::base_models::cancel_base_download,
             commands::base_models::base_download_running,
+            commands::jobs::start_job,
+            commands::jobs::attach_job,
+            commands::jobs::cancel_job,
             commands::projects::list_projects,
             commands::projects::project_detail,
             commands::projects::run_steps,

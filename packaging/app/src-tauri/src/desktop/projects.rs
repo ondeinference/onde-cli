@@ -29,6 +29,8 @@ pub struct ProjectSummary {
     pub base_model_id: String,
     pub created_at: u64,
     pub dataset: DatasetKind,
+    /// The complete base model is on disk, so a job can start.
+    pub base_ready: bool,
     /// Rows of a valid dataset.
     pub dataset_rows: Option<usize>,
     pub runs: usize,
@@ -103,11 +105,13 @@ fn summary(repo_id: String, meta: ProjectMeta) -> ProjectSummary {
         Ok(p) => (dataset_kind(&p.dataset_path), project::list_runs(&p)),
         Err(_) => ((DatasetKind::Missing, None), Vec::new()),
     };
+    let base_ready = onde_cli::models::base_model_dir(&meta.base_model_id).is_some();
     ProjectSummary {
         repo_id,
         base_model_id: meta.base_model_id,
         created_at: meta.created_at,
         dataset,
+        base_ready,
         dataset_rows,
         latest_run: runs.first().map(|r| r.name.clone()),
         runs: runs.len(),

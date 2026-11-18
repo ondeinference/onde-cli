@@ -45,6 +45,8 @@ export interface ProjectSummary {
   base_model_id: string;
   created_at: number;
   dataset: "missing" | "invalid" | "ready";
+  /** The complete base model is on disk, so a job can start. */
+  base_ready: boolean;
   dataset_rows: number | null;
   runs: number;
   latest_run: string | null;
@@ -141,3 +143,45 @@ export interface ProjectDetail {
   runs: RunRecord[];
   has_eval: boolean;
 }
+
+export type JobKind = "census" | "run";
+export type Stage = "training" | "merging" | "exporting";
+export type Backend = "mlx" | "cpu" | "metal";
+
+/** Mirrors `desktop::jobs::JobRequest`. */
+export interface JobRequest {
+  repo_id: string;
+  kind: JobKind;
+  name: string;
+  learning_rate: number;
+  epochs: number;
+  lora_rank: number;
+  lora_alpha: number;
+  max_seq_len: number;
+  dtype: "f16" | "q8_0" | "q4_k_m";
+}
+
+/** Mirrors `desktop::jobs::JobInfo`. */
+export interface JobInfo {
+  repo_id: string;
+  run: string;
+  kind: JobKind;
+  /** The latest stage and backend the job reported, for a screen that attaches late. */
+  stage: Stage | null;
+  backend: { backend: Backend; fallback: string | null } | null;
+}
+
+/** Mirrors `onde_cli::pipeline::RunProgress`, which is tagged with `event`. */
+export type RunEvent =
+  | { event: "stage"; stage: Stage }
+  | { event: "backend"; backend: Backend; fallback: string | null }
+  | { event: "phase"; label: string }
+  | { event: "training"; epoch: number; total_epochs: number; step: number; total_steps: number; loss: number }
+  | ({ event: "step" } & StepRecord)
+  | { event: "epoch_done"; epoch: number; mean_loss: number }
+  | { event: "merge"; layer: number; total: number }
+  | { event: "export"; index: number; total: number }
+  | ({ event: "done" } & RunRecord)
+  | { event: "failed"; message: string }
+  | { event: "cancelled" };
+

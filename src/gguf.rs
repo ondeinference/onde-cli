@@ -1385,7 +1385,7 @@ mod tests {
                     eprintln!("[e2e] epoch {epoch} step {step}/{total_steps} loss {loss:.4}");
                 }
                 crate::pipeline::RunProgress::Done(r) => record = Some(*r),
-                crate::pipeline::RunProgress::Failed(e) => panic!("run failed: {e}"),
+                crate::pipeline::RunProgress::Failed { message } => panic!("run failed: {message}"),
                 crate::pipeline::RunProgress::Cancelled => panic!("run cancelled"),
                 _ => {}
             }

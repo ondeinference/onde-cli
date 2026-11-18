@@ -11,7 +11,8 @@
     "tauri": "tauri",
     "appstore": "bash scripts/build-appstore.sh",
     "direct": "bash scripts/build-direct.sh",
-    "check:config": "node scripts/check-tauri-config.mjs"
+    "check:config": "node scripts/check-tauri-config.mjs",
+    "test": "node --test"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.5",

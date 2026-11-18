@@ -178,7 +178,9 @@ pub enum RunProgress {
         total: usize,
     },
     Done(Box<RunRecord>),
-    Failed(String),
+    Failed {
+        message: String,
+    },
     Cancelled,
 }
 
@@ -233,7 +235,9 @@ pub fn start_run(
         // A bad name or an existing run is refused before anything is written,
         // so a mistake can never overwrite an earlier run's record.
         if let Err(e) = prepare_dir(&spec, &run_dir) {
-            let _ = tx.send(RunProgress::Failed(format!("{e:#}")));
+            let _ = tx.send(RunProgress::Failed {
+                message: format!("{e:#}"),
+            });
             return;
         }
         let mut record = RunRecord::new(&spec);
@@ -255,7 +259,7 @@ pub fn start_run(
                 record.status = RunStatus::Failed;
                 record.error = Some(message.clone());
                 let _ = write_record(&run_dir, &record);
-                let _ = tx.send(RunProgress::Failed(message));
+                let _ = tx.send(RunProgress::Failed { message });
             }
         }
     });
@@ -673,7 +677,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         start_run(spec("broken"), &project, None, tx);
         let last = std::iter::from_fn(|| rx.blocking_recv()).last().unwrap();
-        assert!(matches!(last, RunProgress::Failed(_)), "{last:?}");
+        assert!(matches!(last, RunProgress::Failed { .. }), "{last:?}");
         let record = read_record(&project.runs_dir.join("broken")).unwrap();
         assert_eq!(record.status, RunStatus::Failed);
         assert!(record.error.is_some());
@@ -681,7 +685,9 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         start_run(spec("broken"), &project, None, tx);
         match std::iter::from_fn(|| rx.blocking_recv()).last().unwrap() {
-            RunProgress::Failed(m) => assert!(m.contains("already exists"), "{m}"),
+            RunProgress::Failed { message } => {
+                assert!(message.contains("already exists"), "{message}")
+            }
             other => panic!("{other:?}"),
         }
         // The first run's record is untouched.
@@ -723,5 +729,69 @@ mod tests {
         assert!(prepare_dir(&s, &dir).is_ok());
         let again = prepare_dir(&s, &dir).unwrap_err();
         assert!(format!("{again:#}").contains("already exists"), "{again:#}");
+    }
+
+    /// Hosts send these as JSON. An internally tagged enum cannot serialize a
+    /// newtype variant that holds a plain string, so every variant is checked.
+    #[test]
+    fn every_progress_event_serializes_with_its_event_tag() {
+        let record = RunRecord::new(&spec("a"));
+        let step = StepRecord {
+            epoch: 1,
+            step: 2,
+            loss: 0.5,
+            grad_norm: Some(3.0),
+            skipped: None,
+            t_ms: 4,
+        };
+        let events = vec![
+            (
+                RunProgress::Stage {
+                    stage: Stage::Training,
+                },
+                "stage",
+            ),
+            (
+                RunProgress::Backend {
+                    backend: FineTuneBackend::Mlx,
+                    fallback: None,
+                },
+                "backend",
+            ),
+            (RunProgress::Phase { label: "x".into() }, "phase"),
+            (
+                RunProgress::Training {
+                    epoch: 1,
+                    total_epochs: 2,
+                    step: 3,
+                    total_steps: 4,
+                    loss: 1.0,
+                },
+                "training",
+            ),
+            (RunProgress::Step(step), "step"),
+            (
+                RunProgress::EpochDone {
+                    epoch: 1,
+                    mean_loss: 0.1,
+                },
+                "epoch_done",
+            ),
+            (RunProgress::Merge { layer: 1, total: 2 }, "merge"),
+            (RunProgress::Export { index: 1, total: 2 }, "export"),
+            (RunProgress::Done(Box::new(record)), "done"),
+            (
+                RunProgress::Failed {
+                    message: "boom".into(),
+                },
+                "failed",
+            ),
+            (RunProgress::Cancelled, "cancelled"),
+        ];
+        for (event, tag) in events {
+            let json = serde_json::to_value(&event)
+                .unwrap_or_else(|e| panic!("{tag} does not serialize: {e}"));
+            assert_eq!(json["event"], tag, "{json}");
+        }
     }
 }

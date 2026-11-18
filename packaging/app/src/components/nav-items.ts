@@ -2,6 +2,7 @@
 // back in the change that builds each one.
 export const NAV_ITEMS = [
   { id: "projects", label: "Projects" },
+  { id: "finetune", label: "Fine-tune" },
 ] as const;
 
 export type TabId = (typeof NAV_ITEMS)[number]["id"];
