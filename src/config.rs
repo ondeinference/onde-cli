@@ -13,9 +13,15 @@ pub const HF_TOKEN: &str = env!("HF_TOKEN");
 pub(crate) const GRESIQ_API_KEY: &str = env!("GRESIQ_API_KEY");
 pub(crate) const GRESIQ_API_SECRET: &str = env!("GRESIQ_API_SECRET");
 
-/// What a cloud feature says when this build carries no Onde credentials: a
-/// source build made without a `.env`, or `cargo install`.
+/// What a cloud feature says when this build carries no Onde auth credentials:
+/// a source build made without a `.env`, or `cargo install`. Sign-in is off,
+/// and with no way to sign in, publishing and app assignment are too.
 pub const NOT_CONNECTED: &str = "This build has no Onde credentials, so cloud sign-in, publishing and app assignment are off. Fine-tuning, merging, export and eval still work. Official releases include the credentials.";
+
+/// What the apps-and-models features say when sign-in works (the Onde auth
+/// credentials are present) but the GresIQ keys are missing. Reaching this
+/// path means the user already signed in, so it does not claim sign-in is off.
+pub const NOT_CONNECTED_GRESIQ: &str = "This build has no GresIQ credentials, so publishing and app assignment are off. Sign-in and the local tools still work. Official releases include the credentials.";
 
 fn connected(app_id: &str, app_secret: &str) -> bool {
     !app_id.is_empty() && !app_secret.is_empty()

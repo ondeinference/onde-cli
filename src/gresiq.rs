@@ -5,7 +5,7 @@ use smbcloud_gresiq_sdk::{CreateModelParams, Environment, OndeApp, OndeModel};
 /// The GresIQ key and secret, or an error saying this build has none.
 fn keys() -> anyhow::Result<(&'static str, &'static str)> {
     if !crate::config::gresiq_connected() {
-        anyhow::bail!(crate::config::NOT_CONNECTED);
+        anyhow::bail!(crate::config::NOT_CONNECTED_GRESIQ);
     }
     Ok((
         crate::config::GRESIQ_API_KEY,
