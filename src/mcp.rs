@@ -58,6 +58,18 @@ impl OndeMcpServer {
     }
 }
 
+/// The auth tools need the credentials baked into official builds.
+fn require_connected() -> Result<(), ErrorData> {
+    if crate::config::is_connected() {
+        Ok(())
+    } else {
+        Err(ErrorData::invalid_request(
+            crate::config::NOT_CONNECTED,
+            None,
+        ))
+    }
+}
+
 impl Default for OndeMcpServer {
     fn default() -> Self {
         Self::new()
@@ -147,6 +159,7 @@ impl OndeMcpServer {
         &self,
         Parameters(args): Parameters<LoginArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        require_connected()?;
         let status = login_with_client(
             Environment::Production,
             credentials(),
@@ -189,6 +202,7 @@ impl OndeMcpServer {
                        `login`; returns the user as JSON."
     )]
     async fn me(&self) -> Result<CallToolResult, ErrorData> {
+        require_connected()?;
         let token = self.access_token()?;
         let user = me_with_client(Environment::Production, credentials(), &token)
             .await

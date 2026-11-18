@@ -37,6 +37,8 @@ jobs:
     runs-on: macos-26
     timeout-minutes: 120
     env:
+      # A release must never ship without the credentials, so a missing one fails the build.
+      ONDE_REQUIRE_CREDENTIALS: "1"
       ONDE_APP_ID: ${{ secrets.ONDE_APP_ID }}
       ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET }}
       GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY }}

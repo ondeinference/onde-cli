@@ -46,6 +46,7 @@ pub async fn oauth_sign_in(
     pending: State<'_, PendingSignIn>,
     provider: Provider,
 ) -> Result<Profile, CommandError> {
+    crate::desktop::auth::ensure_connected()?;
     let state = oauth::new_state();
     let cancelled = pending.begin();
 
