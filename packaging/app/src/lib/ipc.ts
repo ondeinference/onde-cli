@@ -1,6 +1,8 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
+  BaseModelView,
   DatasetInfo,
+  DownloadMsg,
   OAuthProvider,
   Profile,
   ProjectDetail,
@@ -29,4 +31,15 @@ export const ipc = {
   projectDetail: (repoId: string) => invoke<ProjectDetail>("project_detail", { repoId }),
   runSteps: (repoId: string, run: string) => invoke<StepRecord[]>("run_steps", { repoId, run }),
   importDataset: (repoId: string) => invoke<DatasetInfo>("import_dataset", { repoId }),
+  baseModels: () => invoke<BaseModelView[]>("list_base_models"),
+  createProject: (repoId: string, baseModelId: string) =>
+    invoke<ProjectSummary>("create_project", { repoId, baseModelId }),
+  /** Resolves when the download finishes, fails or is cancelled; progress
+   *  arrives on `onEvent` meanwhile. */
+  downloadBaseModel: (repoId: string, onEvent: (msg: DownloadMsg) => void) => {
+    const channel = new Channel<DownloadMsg>();
+    channel.onmessage = onEvent;
+    return invoke<void>("download_base_model", { repoId, onEvent: channel });
+  },
+  cancelBaseDownload: (repoId: string) => invoke<boolean>("cancel_base_download", { repoId }),
 };

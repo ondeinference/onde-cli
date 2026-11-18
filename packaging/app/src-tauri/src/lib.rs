@@ -3,6 +3,7 @@ mod desktop;
 mod error;
 mod picker;
 mod state;
+mod state_downloads;
 
 #[cfg(test)]
 mod capability_tests;
@@ -28,11 +29,16 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .manage(state::PendingSignIn::default())
         .manage(links)
+        .manage(state_downloads::Downloads::default())
         .invoke_handler(tauri::generate_handler![
             commands::app::app_build,
             commands::links::projects_location,
             commands::links::link_projects_folder,
             commands::links::unlink_projects_folder,
+            commands::base_models::list_base_models,
+            commands::base_models::create_project,
+            commands::base_models::download_base_model,
+            commands::base_models::cancel_base_download,
             commands::projects::list_projects,
             commands::projects::project_detail,
             commands::projects::run_steps,

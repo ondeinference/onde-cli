@@ -105,12 +105,39 @@ export interface StepRecord {
   t_ms: number;
 }
 
+/** Mirrors `desktop::base_models::BaseModelView`. */
+export interface BaseModelView {
+  repo_id: string;
+  display_name: string;
+  size_display: string;
+  params: string;
+  description: string;
+  /** Where the complete model is on disk, or null when it is not downloaded. */
+  dir: string | null;
+}
+
+/** Mirrors `commands::base_models::DownloadMsg`. */
+export type DownloadMsg =
+  | {
+      event: "progress";
+      filename: string;
+      file_index: number;
+      total_files: number;
+      file_bytes_done: number;
+      file_bytes_total: number;
+    }
+  | { event: "done" }
+  | { event: "failed"; message: string }
+  | { event: "cancelled" };
+
 /** Mirrors `desktop::projects::ProjectDetail`. */
 export interface ProjectDetail {
   repo_id: string;
   base_model_id: string;
   created_at: number;
   dataset: DatasetState;
+  /** Where the complete base model is on disk, or null when it is not. */
+  base_dir: string | null;
   runs: RunRecord[];
   has_eval: boolean;
 }
