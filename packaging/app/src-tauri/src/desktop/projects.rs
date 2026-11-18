@@ -4,7 +4,7 @@
 //! Both are checked here before they become part of a path, so a crafted id
 //! cannot reach outside the projects folder.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use onde_cli::{
     pipeline::{self, RunRecord, StepRecord},
@@ -42,6 +42,8 @@ pub struct ProjectDetail {
     pub base_model_id: String,
     pub created_at: u64,
     pub dataset: DatasetState,
+    /// Where the complete base model is on disk, when it is.
+    pub base_dir: Option<PathBuf>,
     pub runs: Vec<RunRecord>,
     /// An `eval/eval_inputs.json` exists, so the project can be evaluated.
     pub has_eval: bool,
@@ -134,6 +136,7 @@ pub fn detail(repo_id: &str) -> Result<ProjectDetail, String> {
         base_model_id: p.base_model_id.clone(),
         created_at: meta.map_or(0, |m| m.created_at),
         dataset: dataset_state(&p.dataset_path),
+        base_dir: onde_cli::models::base_model_dir(&p.base_model_id),
         runs: project::list_runs(&p),
         has_eval: p.project_dir.join("eval/eval_inputs.json").is_file(),
     })

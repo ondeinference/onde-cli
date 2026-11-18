@@ -8,6 +8,7 @@ import {
   type RunRecord,
   type StepRecord,
 } from "@/lib/types";
+import { BaseModelCard } from "./BaseModelCard";
 import { LossChart } from "./LossChart";
 import { formatBytes, formatDate, formatLoss, formatLr } from "./format";
 
@@ -234,6 +235,7 @@ export function ProjectDetail({ repoId, onBack }: { repoId: string; onBack: () =
       {error && <p className="text-sm text-red-600">{error}</p>}
       {detail && (
         <>
+          <BaseModelCard detail={detail} onChanged={load} />
           <DatasetCard repoId={repoId} dataset={detail.dataset} onReplaced={load} />
           <section>
             <h2 className="mb-2 text-sm font-medium">Runs</h2>
