@@ -53,6 +53,16 @@ scoop bucket add onde https://github.com/ondeinference/scoop-bucket
 scoop install onde
 ```
 
+## Build from source
+
+```sh
+cargo install onde-cli       # from crates.io
+# or, in a checkout:
+cargo build --release
+```
+
+A build you make yourself has no Onde credentials. It fine-tunes, merges, exports to GGUF and evaluates models on your machine, and chat works. Cloud sign-in, publishing to Hugging Face through your Onde account and assigning models to apps are off, and say so when you try them. The binaries on GitHub Releases and in the package managers include the credentials. To get them in a build of your own you need the Onde values in a `.env` file or the environment.
+
 ## Pre-built binary
 
 Download a release from [GitHub Releases](https://github.com/ondeinference/onde-cli/releases):

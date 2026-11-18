@@ -13,7 +13,9 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt -- --check
 ```
 
-The build **requires** these env vars (read from `.env` via `build.rs`): `ONDE_APP_ID`, `ONDE_APP_SECRET`, `GRESIQ_API_KEY`, `GRESIQ_API_SECRET`. `HF_TOKEN` is optional. They are baked in at compile time via `env!(...)` in `src/app.rs`. Changing `.env` triggers a full rebuild.
+`build.rs` reads these env vars (from `.env` or the environment) and bakes them in at compile time with `env!(...)` in `src/config.rs`: `ONDE_APP_ID`, `ONDE_APP_SECRET`, `GRESIQ_API_KEY`, `GRESIQ_API_SECRET`, and the optional `HF_TOKEN`. Changing `.env` triggers a full rebuild.
+
+They are optional. A build without them (a contributor's checkout, `cargo install`) still fine-tunes, merges, exports and evaluates, and `config::is_connected()` is false, so sign-in, publishing and app assignment answer with `config::NOT_CONNECTED`. Official builds must carry them, so the release workflows set `ONDE_REQUIRE_CREDENTIALS=1`, which makes a missing value fail the build. Any new cloud entry point has to check `is_connected()` (or go through `gresiq.rs`, which does).
 
 On macOS, candle's `metal` + `accelerate` features are added automatically. **Fine-tuning always runs on CPU** — Metal's backward pass in candle 0.10.2 produces corrupt gradients (1e6–1e29 in magnitude, where CPU gives ~40–65 for identical losses). Use `ONDE_FINETUNE_METAL=1` only to test newer candle versions, and verify with `ONDE_FINETUNE_GRAD_DEBUG=1` (per-step loss/max_abs/norm).
 

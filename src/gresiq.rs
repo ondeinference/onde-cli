@@ -2,34 +2,34 @@
 //! need to pass the user's access token.
 use smbcloud_gresiq_sdk::{CreateModelParams, Environment, OndeApp, OndeModel};
 
-fn api_key() -> &'static str {
-    crate::config::GRESIQ_API_KEY
-}
-
-fn api_secret() -> &'static str {
-    crate::config::GRESIQ_API_SECRET
+/// The GresIQ key and secret, or an error saying this build has none.
+fn keys() -> anyhow::Result<(&'static str, &'static str)> {
+    if !crate::config::gresiq_connected() {
+        anyhow::bail!(crate::config::NOT_CONNECTED_GRESIQ);
+    }
+    Ok((
+        crate::config::GRESIQ_API_KEY,
+        crate::config::GRESIQ_API_SECRET,
+    ))
 }
 
 pub async fn load_apps(token: &str) -> anyhow::Result<Vec<OndeApp>> {
-    smbcloud_gresiq_sdk::list_apps(&Environment::Production, api_key(), api_secret(), token)
+    let (api_key, api_secret) = keys()?;
+    smbcloud_gresiq_sdk::list_apps(&Environment::Production, api_key, api_secret, token)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 pub async fn create_app(token: &str, name: &str) -> anyhow::Result<OndeApp> {
-    smbcloud_gresiq_sdk::create_app(
-        &Environment::Production,
-        api_key(),
-        api_secret(),
-        token,
-        name,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("{e}"))
+    let (api_key, api_secret) = keys()?;
+    smbcloud_gresiq_sdk::create_app(&Environment::Production, api_key, api_secret, token, name)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 pub async fn load_models(token: &str) -> anyhow::Result<Vec<OndeModel>> {
-    smbcloud_gresiq_sdk::list_models(&Environment::Production, api_key(), api_secret(), token)
+    let (api_key, api_secret) = keys()?;
+    smbcloud_gresiq_sdk::list_models(&Environment::Production, api_key, api_secret, token)
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
 }
@@ -46,10 +46,11 @@ pub async fn create_model(
     gguf_file: Option<&str>,
     approx_size_bytes: Option<i64>,
 ) -> anyhow::Result<OndeModel> {
+    let (api_key, api_secret) = keys()?;
     smbcloud_gresiq_sdk::create_model(
         &Environment::Production,
-        api_key(),
-        api_secret(),
+        api_key,
+        api_secret,
         token,
         CreateModelParams {
             hf_repo_id,
@@ -69,10 +70,11 @@ pub async fn create_model(
 }
 
 pub async fn assign_model(token: &str, onde_app_id: &str, model_id: &str) -> anyhow::Result<()> {
+    let (api_key, api_secret) = keys()?;
     smbcloud_gresiq_sdk::assign_model(
         &Environment::Production,
-        api_key(),
-        api_secret(),
+        api_key,
+        api_secret,
         token,
         onde_app_id,
         model_id,
@@ -82,10 +84,11 @@ pub async fn assign_model(token: &str, onde_app_id: &str, model_id: &str) -> any
 }
 
 pub async fn rename_app(token: &str, onde_app_id: &str, new_name: &str) -> anyhow::Result<OndeApp> {
+    let (api_key, api_secret) = keys()?;
     smbcloud_gresiq_sdk::rename_app(
         &Environment::Production,
-        api_key(),
-        api_secret(),
+        api_key,
+        api_secret,
         token,
         onde_app_id,
         new_name,

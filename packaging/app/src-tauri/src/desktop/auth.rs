@@ -1,5 +1,8 @@
 use crate::error::CommandError;
-use onde_cli::{config::credentials, token};
+use onde_cli::{
+    config::{NOT_CONNECTED, credentials, is_connected},
+    token,
+};
 use serde::Serialize;
 use smbcloud_auth_sdk::{
     login::login_with_client, logout::logout_with_client, me::me_with_client,
@@ -25,6 +28,9 @@ fn error_text(e: &ErrorResponse) -> String {
 /// The signed-in user, if a saved token is still valid. A rejected token is
 /// cleared so the next launch starts signed out.
 pub async fn restore() -> Option<Profile> {
+    if !is_connected() {
+        return None;
+    }
     let saved = token::load()?;
     match me_with_client(Environment::Production, credentials(), &saved).await {
         Ok(user) => Some(Profile { email: user.email }),
@@ -61,7 +67,17 @@ pub async fn finish_sign_in(
     }
 }
 
+/// Refuses cloud sign-in in a build that carries no Onde credentials.
+pub fn ensure_connected() -> Result<(), CommandError> {
+    if is_connected() {
+        Ok(())
+    } else {
+        Err(CommandError::Auth(NOT_CONNECTED.into()))
+    }
+}
+
 pub async fn sign_in(email: String, password: String) -> Result<Profile, CommandError> {
+    ensure_connected()?;
     let status = login_with_client(
         Environment::Production,
         credentials(),
@@ -83,6 +99,7 @@ pub async fn sign_in(email: String, password: String) -> Result<Profile, Command
 }
 
 pub async fn sign_up(email: String, password: String) -> Result<String, CommandError> {
+    ensure_connected()?;
     signup_with_client(Environment::Production, credentials(), email, password)
         .await
         .map(|r| r.message)

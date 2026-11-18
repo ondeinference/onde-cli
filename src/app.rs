@@ -853,7 +853,9 @@ pub async fn run<B: ratatui::backend::Backend>(terminal: &mut ratatui::Terminal<
     let mut events = EventStream::new();
 
     // pick up where we left off if there is a saved token
-    if let Some(saved_token) = token::load() {
+    if crate::config::is_connected()
+        && let Some(saved_token) = token::load()
+    {
         app.busy = true;
         app.status = Status::neutral("Restoring session…");
         let tx2 = tx.clone();
@@ -2794,6 +2796,11 @@ fn submit_assign_model(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
 fn submit(app: &mut App, tx: mpsc::UnboundedSender<AuthEvent>) {
     let email = app.email.trim().to_string();
     let password = app.password.clone();
+
+    if !crate::config::is_connected() {
+        app.status = Status::error(crate::config::NOT_CONNECTED);
+        return;
+    }
 
     if email.is_empty() || password.is_empty() {
         app.status = Status::error("Email and password are required.");

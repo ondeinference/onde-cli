@@ -43,7 +43,8 @@ cargo install onde-cli
 ```
 
 More ways, including pip/uv, .NET, Dart pub, winget, Scoop and pre-built binaries, are in
-[docs/install.md](docs/install.md).
+[docs/install.md](docs/install.md). A `cargo install` build works on your machine but has cloud
+sign-in off; [why](docs/install.md#build-from-source).
 
 ## Use it
 
