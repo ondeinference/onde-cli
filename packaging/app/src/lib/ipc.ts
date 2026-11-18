@@ -3,6 +3,9 @@ import type {
   BaseModelView,
   DatasetInfo,
   DownloadMsg,
+  JobInfo,
+  JobRequest,
+  RunEvent,
   OAuthProvider,
   Profile,
   ProjectDetail,
@@ -43,4 +46,17 @@ export const ipc = {
   },
   cancelBaseDownload: (repoId: string) => invoke<boolean>("cancel_base_download", { repoId }),
   baseDownloadRunning: (repoId: string) => invoke<boolean>("base_download_running", { repoId }),
+  /** Starts a job. Events arrive on `onEvent` until `done`, `failed` or `cancelled`. */
+  startJob: (request: JobRequest, onEvent: (e: RunEvent) => void) => {
+    const channel = new Channel<RunEvent>();
+    channel.onmessage = onEvent;
+    return invoke<JobInfo>("start_job", { request, onEvent: channel });
+  },
+  /** The job in progress, or null. Its events go to `onEvent` from now on. */
+  attachJob: (onEvent: (e: RunEvent) => void) => {
+    const channel = new Channel<RunEvent>();
+    channel.onmessage = onEvent;
+    return invoke<JobInfo | null>("attach_job", { onEvent: channel });
+  },
+  cancelJob: () => invoke<boolean>("cancel_job"),
 };

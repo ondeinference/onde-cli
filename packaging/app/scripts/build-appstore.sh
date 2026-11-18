@@ -35,15 +35,20 @@ do_build() {
   echo "🏷   bundleVersion → ${BUNDLE_VERSION}"
   echo "📜  profile       → ${MAS_PROVISIONING_PROFILE_PATH}"
 
+  prebuild_mlx
+  METALLIB="$(mlx_metallib)"
+  echo "🧩  mlx.metallib  → ${METALLIB}"
+
   # --config values merge in order; the file is never modified.
   (cd "$APP_DIR" && pnpm tauri build \
     --bundles app \
     --target universal-apple-darwin \
     --config "$CONFIG" \
-    --config "$(config_json "$BUNDLE_VERSION" "$MAS_PROVISIONING_PROFILE_PATH")")
+    --config "$(config_json "$BUNDLE_VERSION" "$MAS_PROVISIONING_PROFILE_PATH" "$METALLIB")")
 
   [[ -d "$APP_PATH" ]] || fail "Build succeeded but the .app is not at: ${APP_PATH}"
   verify_codesign_matches_profile "$APP_PATH"
+  require_metallib "$APP_PATH"
   require_entitlements "$APP_PATH" \
     com.apple.security.app-sandbox \
     com.apple.security.network.client \

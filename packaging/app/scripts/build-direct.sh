@@ -42,14 +42,19 @@ do_build() {
   echo "🏷   bundleVersion → ${BUNDLE_VERSION}"
   echo "📜  profile       → ${DEVID_PROVISIONING_PROFILE_PATH}"
 
+  prebuild_mlx
+  METALLIB="$(mlx_metallib)"
+  echo "🧩  mlx.metallib  → ${METALLIB}"
+
   (cd "$APP_DIR" && pnpm tauri build \
     --bundles app,dmg \
     --target universal-apple-darwin \
     --config "$CONFIG" \
-    --config "$(config_json "$BUNDLE_VERSION" "$DEVID_PROVISIONING_PROFILE_PATH")")
+    --config "$(config_json "$BUNDLE_VERSION" "$DEVID_PROVISIONING_PROFILE_PATH" "$METALLIB")")
 
   [[ -d "$APP_PATH" ]] || fail "Build succeeded but the .app is not at: ${APP_PATH}"
   [[ -n "$(find_dmg)" ]] || fail "Build succeeded but there is no .dmg in ${BUNDLE_DIR}/dmg"
+  require_metallib "$APP_PATH"
   notarize_dmg "$(find_dmg)"
   ok "Build complete → $(find_dmg)"
 }

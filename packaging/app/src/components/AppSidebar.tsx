@@ -20,10 +20,13 @@ function useVersionLabel() {
 export function AppSidebar({
   open,
   active,
+  busyTab,
   onSelect,
 }: {
   open: boolean;
   active: TabId;
+  /** A tab whose work is running in the background gets a dot. */
+  busyTab?: TabId;
   onSelect: (tab: TabId) => void;
 }) {
   const versionLabel = useVersionLabel();
@@ -51,6 +54,13 @@ export function AppSidebar({
                 className="w-full rounded-md px-3 py-1.5 text-left text-sm hover:bg-fog-line aria-[current=page]:bg-fog-line aria-[current=page]:font-medium"
               >
                 {item.label}
+                {busyTab === item.id && (
+                  <span
+                    role="img"
+                    aria-label="running"
+                    className="ml-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-green-600 align-middle"
+                  />
+                )}
               </button>
             </li>
           ))}

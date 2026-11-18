@@ -3,6 +3,9 @@ import { AppTopBar } from "@/components/AppTopBar";
 import { AppSidebar } from "@/components/AppSidebar";
 import { AccountButton, SignInForm } from "@/components/AccountMenu";
 import { NAV_ITEMS, type TabId } from "@/components/nav-items";
+import { FinetuneView } from "@/features/finetune/FinetuneView";
+import { isRunning } from "@/features/finetune/job";
+import { useJob } from "@/features/finetune/useJob";
 import { ProjectsView } from "@/features/projects/ProjectsView";
 import { isDesktop } from "@/lib/os";
 import { ipc } from "@/lib/ipc";
@@ -15,6 +18,7 @@ export default function App() {
   const [tab, setTab] = useState<TabId>(NAV_ITEMS[0].id);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [showSignIn, setShowSignIn] = useState(false);
+  const job = useJob();
 
   useEffect(() => {
     localStorage.setItem(SIDEBAR_KEY, String(sidebarOpen));
@@ -37,7 +41,7 @@ export default function App() {
           />
         }
       />
-      <AppSidebar open={sidebarOpen} active={tab} onSelect={(t) => { setTab(t); setShowSignIn(false); }} />
+      <AppSidebar open={sidebarOpen} active={tab} busyTab={isRunning(job.state) ? "finetune" : undefined} onSelect={(t) => { setTab(t); setShowSignIn(false); }} />
       {/* <main> is the only scroller; the document itself never scrolls (index.css).
           tabIndex makes it focusable so a keyboard user can Tab to it and a click
           lands focus here, keeping space/arrow-key scrolling that overflow:hidden
@@ -54,7 +58,7 @@ export default function App() {
           {showSignIn && !profile ? (
             <SignInForm onSignedIn={(p) => { setProfile(p); setShowSignIn(false); }} />
           ) : (
-            tab === "projects" && <ProjectsView />
+            tab === "projects" ? <ProjectsView /> : <FinetuneView job={job} />
           )}
         </div>
       </main>

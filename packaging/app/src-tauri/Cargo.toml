@@ -37,8 +37,16 @@ base64 = "0.22"
 # calls with no Tauri API, so they are used directly and only on macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSString", "NSURL"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSObject", "NSProcessInfo", "NSString", "NSURL"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSWindow", "NSResponder", "NSApplication"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+# `tauri dev` is a debug build, and an unoptimized trainer and GGUF quantizer are
+# unusably slow: exporting a 1.7B model took over five minutes where an optimized
+# build takes under one. Dependencies, which include the onde-cli pipeline and
+# candle, build with optimizations; the app's own code stays unoptimized so
+# edits still rebuild quickly.
+[profile.dev.package."*"]
+opt-level = 3

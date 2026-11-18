@@ -68,12 +68,33 @@ bundle_version() { date -u +"%Y%m%d.%H%M"; }
 # the binary (build.rs reads ONDE_DESKTOP_BUILD), so the sidebar can show it.
 export_build_number() { export ONDE_DESKTOP_BUILD="$1"; }
 
+# MLX loads its Metal kernels from mlx.metallib next to the app binary. Without
+# the file, training quietly falls back to the CPU, which is many times slower.
+# mlx-sys builds it under the cargo target directory, so compile for Apple
+# Silicon first and hand the file's path to the bundle.
+prebuild_mlx() {
+  step "MLX kernels"
+  (cd "$TAURI_DIR" && cargo build --release --target aarch64-apple-darwin --features tauri/custom-protocol)
+}
+
+# Absolute path of the mlx.metallib that prebuild_mlx left behind.
+mlx_metallib() {
+  (cd "$TAURI_DIR" && "${CLI_ROOT}/packaging/macos/find-mlx-metallib.sh" aarch64-apple-darwin "${1:-release}")
+}
+
+# Fail unless the built .app carries the kernels next to its binary.
+require_metallib() {
+  [[ -f "$1/Contents/MacOS/mlx.metallib" ]] \
+    || fail "mlx.metallib is not in $1/Contents/MacOS. Training would fall back to the CPU."
+}
+
 # JSON for one extra --config. node is already needed for the frontend, and it
-# quotes paths correctly.
+# quotes paths correctly. The third argument is the mlx.metallib to bundle.
 config_json() {
-  BUNDLE_VERSION="$1" PROFILE="$2" node -e '
+  BUNDLE_VERSION="$1" PROFILE="$2" METALLIB="$3" node -e '
     const m = { bundleVersion: process.env.BUNDLE_VERSION,
-                files: { "embedded.provisionprofile": process.env.PROFILE } };
+                files: { "embedded.provisionprofile": process.env.PROFILE,
+                         "MacOS/mlx.metallib": process.env.METALLIB } };
     process.stdout.write(JSON.stringify({ bundle: { macOS: m } }));'
 }
 
