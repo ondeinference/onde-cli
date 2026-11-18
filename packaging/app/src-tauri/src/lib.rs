@@ -39,6 +39,7 @@ pub fn run() {
             commands::base_models::create_project,
             commands::base_models::download_base_model,
             commands::base_models::cancel_base_download,
+            commands::base_models::base_download_running,
             commands::projects::list_projects,
             commands::projects::project_detail,
             commands::projects::run_steps,

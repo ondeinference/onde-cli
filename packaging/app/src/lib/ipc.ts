@@ -42,4 +42,5 @@ export const ipc = {
     return invoke<void>("download_base_model", { repoId, onEvent: channel });
   },
   cancelBaseDownload: (repoId: string) => invoke<boolean>("cancel_base_download", { repoId }),
+  baseDownloadRunning: (repoId: string) => invoke<boolean>("base_download_running", { repoId }),
 };

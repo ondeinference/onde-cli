@@ -73,12 +73,12 @@ pub async fn download_base_model(
         hf::preferred_download_hub(),
         tx,
     ));
-    if !downloads.begin(&repo_id, task.abort_handle()) {
+    let Some(ticket) = downloads.begin(&repo_id, task.abort_handle()) else {
         task.abort();
         return Err(CommandError::InvalidChoice(format!(
             "{repo_id} is already downloading."
         )));
-    }
+    };
 
     let mut last = DownloadMsg::Cancelled;
     while let Some(event) = rx.recv().await {
@@ -100,12 +100,19 @@ pub async fn download_base_model(
             break;
         }
     }
-    downloads.finish(&repo_id);
+    downloads.finish(&repo_id, ticket);
     // The channel closing with no final message means the task was aborted.
     if matches!(last, DownloadMsg::Cancelled) {
         let _ = on_event.send(DownloadMsg::Cancelled);
     }
     Ok(())
+}
+
+/// Whether a download of this model is running, for a screen that was closed and
+/// opened again while it went on.
+#[tauri::command]
+pub fn base_download_running(repo_id: String, downloads: State<'_, Downloads>) -> bool {
+    downloads.is_running(&repo_id)
 }
 
 #[tauri::command]
