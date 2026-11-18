@@ -16,7 +16,10 @@ fn sink(channel: Channel<RunProgress>) -> crate::desktop::jobs::Sink {
 
 /// Start a census or a training run. Events arrive on `on_event` until the run
 /// ends with `done`, `failed` or `cancelled`.
-#[tauri::command]
+///
+/// `async` runs it off the main thread. Checking the project reads and parses
+/// the whole dataset, which must not freeze the window.
+#[tauri::command(async)]
 pub fn start_job(
     request: JobRequest,
     on_event: Channel<RunProgress>,

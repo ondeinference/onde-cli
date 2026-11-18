@@ -166,6 +166,9 @@ export interface JobInfo {
   repo_id: string;
   run: string;
   kind: JobKind;
+  /** The latest stage and backend the job reported, for a screen that attaches late. */
+  stage: Stage | null;
+  backend: { backend: Backend; fallback: string | null } | null;
 }
 
 /** Mirrors `onde_cli::pipeline::RunProgress`, which is tagged with `event`. */

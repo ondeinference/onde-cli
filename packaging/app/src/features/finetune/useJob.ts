@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc } from "@/lib/ipc";
 import type { JobRequest, RunEvent, StepRecord } from "@/lib/types";
-import { apply, idle, type JobState } from "./job";
+import { apply, defaultRunName, elapsedFromSteps, idle, positionFromSteps, type JobState } from "./job";
 
 /** The running job as the screen sees it. It lives in `App`, so it survives
  *  switching tabs, and it reattaches to a job that kept running while the
@@ -45,8 +45,26 @@ export function useJob() {
       .attachJob(onEvent)
       .then(async (info) => {
         if (!info) return;
-        setState({ ...idle, info, phase: "Reconnected to the running job" });
-        steps.current = await ipc.runSteps(info.repo_id, info.run).catch(() => []);
+        setState({
+          ...idle,
+          info,
+          stage: info.stage,
+          backend: info.backend ? { name: info.backend.backend, fallback: info.backend.fallback } : null,
+          phase: info.stage ? null : "Reconnected to the running job",
+        });
+        const [recorded, detail] = await Promise.all([
+          ipc.runSteps(info.repo_id, info.run).catch(() => []),
+          ipc.projectDetail(info.repo_id).catch(() => null),
+        ]);
+        steps.current = recorded;
+        // The time estimate and the rows-left-out warning need what the first
+        // screen knew: when training began, and how many rows the dataset has.
+        const elapsed = elapsedFromSteps(recorded);
+        trainingStartedAt.current = elapsed === null ? null : Date.now() - elapsed;
+        datasetRows.current = detail?.dataset.state === "ready" ? detail.dataset.rows : null;
+        const epochs = detail?.runs.find((r) => r.name === info.run)?.spec?.epochs;
+        const position = epochs ? positionFromSteps(recorded, epochs) : null;
+        if (position) setState((s) => ({ ...s, phase: null, position }));
         redraw((n) => n + 1);
       })
       .catch(() => {});
@@ -57,13 +75,22 @@ export function useJob() {
 
   /** Start a job. Rejects, leaving the state idle, when the backend refuses. */
   const start = useCallback(
-    async (request: JobRequest, rows: number | null = null) => {
+    async (request: JobRequest, rows: number | null) => {
       steps.current = [];
       trainingStartedAt.current = null;
       datasetRows.current = rows;
       setState({
         ...idle,
-        info: { repo_id: request.repo_id, run: request.name || "…", kind: request.kind },
+        info: {
+          repo_id: request.repo_id,
+          run:
+            request.kind === "census"
+              ? "census"
+              : request.name || defaultRunName(request.epochs, request.learning_rate),
+          kind: request.kind,
+          stage: null,
+          backend: null,
+        },
         phase: "Starting",
       });
       try {

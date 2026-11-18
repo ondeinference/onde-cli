@@ -17,10 +17,11 @@ use std::{
 };
 
 use onde_cli::{
+    finetune::FineTuneBackend,
     gguf::GgufDtype,
     hf_clone::BASE_MODELS,
     models,
-    pipeline::{self, GgufMeta, RunProgress, RunSpec},
+    pipeline::{self, GgufMeta, RunProgress, RunSpec, Stage},
     project::{self, OndeProject},
 };
 use serde::{Deserialize, Serialize};
@@ -56,12 +57,23 @@ pub struct JobRequest {
     pub dtype: GgufDtype,
 }
 
-/// The job in progress, for a webview that has just loaded.
+/// Which backend a job is training on, and why not the default one.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BackendInfo {
+    pub backend: FineTuneBackend,
+    pub fallback: Option<String>,
+}
+
+/// The job in progress, for a webview that has just loaded. `stage` and
+/// `backend` are the latest the job reported. A webview that reloads mid-run
+/// missed those events and could not tell a merge from training without them.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct JobInfo {
     pub repo_id: String,
     pub run: String,
     pub kind: JobKind,
+    pub stage: Option<Stage>,
+    pub backend: Option<BackendInfo>,
 }
 
 struct Active {
@@ -224,6 +236,8 @@ impl Jobs {
             repo_id: project.repo_id.clone(),
             run: spec.name.clone(),
             kind,
+            stage: None,
+            backend: None,
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let sink = Arc::new(Mutex::new(Some(sink)));
@@ -248,6 +262,23 @@ impl Jobs {
     }
 }
 
+/// Remember the latest stage and backend on the job, for a webview that attaches
+/// later.
+fn remember(slot: &Slot, event: &RunProgress) {
+    let mut guard = lock(slot);
+    let Some(active) = guard.as_mut() else { return };
+    match event {
+        RunProgress::Stage { stage } => active.info.stage = Some(*stage),
+        RunProgress::Backend { backend, fallback } => {
+            active.info.backend = Some(BackendInfo {
+                backend: *backend,
+                fallback: fallback.clone(),
+            })
+        }
+        _ => {}
+    }
+}
+
 /// Pass a run's events to whoever is listening until it ends, then free the slot.
 fn forward(
     mut rx: tokio::sync::mpsc::UnboundedReceiver<RunProgress>,
@@ -262,6 +293,7 @@ fn forward(
     loop {
         match rx.blocking_recv() {
             Some(event) => {
+                remember(slot, &event);
                 let done = is_final(&event);
                 if done {
                     // Freed before the last event goes out, so a webview that
@@ -323,6 +355,17 @@ mod tests {
             max_seq_len: 512,
             dtype: GgufDtype::Q4KM,
         }
+    }
+
+    /// `defaultRunName` in `job.ts` must produce these same strings: the header
+    /// shows the name before the backend has replied.
+    #[test]
+    fn default_run_names_match_the_ones_the_webview_predicts() {
+        assert_eq!(default_run_name(2, 1e-4), "e2-lr1e-4");
+        assert_eq!(default_run_name(3, 5e-5), "e3-lr5e-5");
+        assert_eq!(default_run_name(2, 1.5e-4), "e2-lr1.5e-4");
+        assert_eq!(default_run_name(1, 0.05), "e1-lr5e-2");
+        assert_eq!(default_run_name(1, 1.0), "e1-lr1e0");
     }
 
     #[test]
@@ -437,6 +480,8 @@ mod tests {
                 repo_id: "acme/other".into(),
                 run: "e3-lr1e-4".into(),
                 kind: JobKind::Run,
+                stage: None,
+                backend: None,
             },
             cancel: Arc::new(AtomicBool::new(false)),
             sink: Arc::new(Mutex::new(None)),
@@ -469,6 +514,8 @@ mod tests {
                 repo_id: "acme/tiny".into(),
                 run: "r".into(),
                 kind: JobKind::Run,
+                stage: None,
+                backend: None,
             },
             cancel: Arc::new(AtomicBool::new(false)),
             sink: sink.clone(),
@@ -481,5 +528,63 @@ mod tests {
         assert_eq!(info.run, "r");
         lock(&sink).as_ref().unwrap()(RunProgress::Cancelled);
         assert_eq!(*lock(&got), 1);
+    }
+
+    #[test]
+    fn the_latest_stage_and_backend_are_kept_for_a_webview_that_attaches_late() {
+        let jobs = Jobs::default();
+        *lock(&jobs.active) = Some(Active {
+            info: JobInfo {
+                repo_id: "acme/tiny".into(),
+                run: "r".into(),
+                kind: JobKind::Run,
+                stage: None,
+                backend: None,
+            },
+            cancel: Arc::new(AtomicBool::new(false)),
+            sink: Arc::new(Mutex::new(None)),
+        });
+        remember(
+            &jobs.active,
+            &RunProgress::Backend {
+                backend: FineTuneBackend::Cpu,
+                fallback: Some("no metallib".into()),
+            },
+        );
+        remember(
+            &jobs.active,
+            &RunProgress::Stage {
+                stage: Stage::Training,
+            },
+        );
+        remember(
+            &jobs.active,
+            &RunProgress::Stage {
+                stage: Stage::Merging,
+            },
+        );
+        remember(
+            &jobs.active,
+            &RunProgress::Phase {
+                label: "ignored".into(),
+            },
+        );
+
+        let info = jobs.attach(Box::new(|_| {})).unwrap();
+        assert_eq!(info.stage, Some(Stage::Merging), "the newest stage wins");
+        assert_eq!(
+            info.backend,
+            Some(BackendInfo {
+                backend: FineTuneBackend::Cpu,
+                fallback: Some("no metallib".into())
+            })
+        );
+        // Nothing to remember into when no job is running.
+        remember(
+            &Slot::default(),
+            &RunProgress::Stage {
+                stage: Stage::Exporting,
+            },
+        );
     }
 }

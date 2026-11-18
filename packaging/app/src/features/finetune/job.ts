@@ -73,7 +73,14 @@ export function apply(s: JobState, e: RunEvent): JobState {
     case "export":
       return { ...s, exportProgress: { index: e.index, total: e.total } };
     case "done":
-      return { ...s, stopping: false, outcome: { kind: "done", record: e } };
+      return {
+        ...s,
+        stopping: false,
+        // A screen that attached mid-run missed the epoch events. The finished
+        // record has them all.
+        epochLoss: e.epoch_loss.length > s.epochLoss.length ? e.epoch_loss : s.epochLoss,
+        outcome: { kind: "done", record: e },
+      };
     case "failed":
       return { ...s, stopping: false, outcome: { kind: "failed", message: e.message } };
     case "cancelled":
@@ -105,6 +112,45 @@ export function rowsLeftOut(datasetRows: number | null, p: Position | null): num
   if (datasetRows === null || p === null) return null;
   const left = datasetRows - p.totalSteps;
   return left > 0 ? left : null;
+}
+
+/** The name a run gets when the form leaves it empty. Matches `default_run_name`
+ *  in the backend, so the header shows the real name before the backend replies.
+ *  Rust's `{:e}` and `toExponential()` agree once the sign of the exponent is
+ *  written the same way. */
+export function defaultRunName(epochs: number, learningRate: number): string {
+  return `e${epochs}-lr${learningRate.toExponential().replace("e+", "e")}`;
+}
+
+/** Where a run that is already going stands, from the steps it has recorded.
+ *  `elapsedMs` is how long training has been going, from the first step to the
+ *  latest. `null` when no step has been recorded yet. */
+export function elapsedFromSteps(steps: { t_ms: number }[]): number | null {
+  if (steps.length === 0) return null;
+  return steps[steps.length - 1].t_ms - steps[0].t_ms;
+}
+
+/** Where training stands, rebuilt from the steps a run has recorded. The step
+ *  events that carried this are not replayed when a screen attaches late.
+ *
+ *  A step is recorded for every row the trainer used, so the first epoch's last
+ *  step number is the steps per epoch. Until the first epoch is over that is not
+ *  known, and this returns `null` rather than guess. */
+export function positionFromSteps(
+  steps: { epoch: number; step: number }[],
+  totalEpochs: number,
+): Position | null {
+  if (steps.length === 0 || totalEpochs < 1) return null;
+  const last = steps[steps.length - 1];
+  const firstEpoch = steps.filter((s) => s.epoch === 1);
+  const firstEpochDone = last.epoch > 1;
+  // The trainer is on its last epoch's last step, or past training, when the
+  // run has as many epochs recorded as it was asked for.
+  const totalSteps = firstEpochDone
+    ? firstEpoch.reduce((m, s) => Math.max(m, s.step), 0)
+    : null;
+  if (totalSteps === null) return null;
+  return { epoch: last.epoch, totalEpochs, step: last.step, totalSteps };
 }
 
 export function formatDuration(seconds: number): string {
