@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ipc } from "@/lib/ipc";
 import { errorMessage, type JobRequest, type ProjectSummary } from "@/lib/types";
+import { loraProblem, runProblem } from "./settings";
 import { MAX_SWEEP_RUNS, parseEpochs, parseRates, planSweep, type SweepPlan } from "./sweep";
 
 /** What the form can start. A sweep is several training runs. */
@@ -39,7 +40,11 @@ export function RunForm({
   const [sweepEpochs, setSweepEpochs] = useState("2, 3");
   const [sweepRates, setSweepRates] = useState("5e-5, 1e-4");
   // Names of the runs the project already has, so a sweep does not repeat them.
-  const [existing, setExisting] = useState<string[]>([]);
+  // Tagged with its project: another project's names must never be used, and
+  // until a project's names have loaded (or failed to) they are unknown, which
+  // is not the same as "none".
+  const [existingFor, setExistingFor] = useState<{ repoId: string; names: string[] } | null>(null);
+  const [existingError, setExistingError] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [lr, setLr] = useState("1e-4");
   const [epochs, setEpochs] = useState("2");
@@ -66,12 +71,21 @@ export function RunForm({
     let current = true;
     ipc
       .projectDetail(repoId)
-      .then((d) => current && setExisting(d.runs.map((r) => r.name)))
-      .catch(() => current && setExisting([]));
+      .then((d) => {
+        if (!current) return;
+        setExistingFor({ repoId, names: d.runs.map((r) => r.name) });
+        setExistingError(null);
+      })
+      .catch((e) => {
+        if (!current) return;
+        setExistingFor(null);
+        setExistingError(errorMessage(e));
+      });
     return () => {
       current = false;
     };
   }, [repoId, disabled]);
+  const existing = existingFor?.repoId === repoId ? existingFor.names : null;
 
   const project = projects.find((p) => p.repo_id === repoId);
   const why = project ? blocked(project) : "there are no projects yet";
@@ -91,14 +105,19 @@ export function RunForm({
     max_seq_len: num(maxSeq),
     dtype,
   };
-  const plan = epochList.ok && rateList.ok ? planSweep(base, epochList.values, rateList.values, existing) : null;
+  const plan =
+    epochList.ok && rateList.ok && existing !== null ? planSweep(base, epochList.values, rateList.values, existing) : null;
   const sweepProblem = !sweeping
     ? null
     : !epochList.ok
       ? epochList.error
       : !rateList.ok
         ? rateList.error
-        : plan && plan.runs.length === 0
+        : existing === null
+          ? existingError
+            ? `Could not read this project's runs (${existingError}), so the runs that already exist are not known.`
+            : "Reading the project's runs…"
+          : plan && plan.runs.length === 0
           ? "Every run in this grid already exists."
           : plan && plan.runs.length > MAX_SWEEP_RUNS
             ? `That is ${plan.runs.length} runs. The most one sweep can hold is ${MAX_SWEEP_RUNS}.`
@@ -136,15 +155,11 @@ export function RunForm({
 
   const field = "w-full rounded-md border border-fog-line bg-transparent px-3 py-1.5 text-sm outline-none focus:border-ink disabled:opacity-50";
   const label = "flex flex-col gap-1 text-xs text-fog";
-  const numbers = census || sweeping ? true : Number.isFinite(num(lr)) && Number.isFinite(num(epochs));
-  const ready =
-    !disabled &&
-    why === null &&
-    numbers &&
-    Number.isFinite(num(rank)) &&
-    Number.isFinite(num(alpha)) &&
-    Number.isFinite(num(maxSeq)) &&
-    !sweepProblem;
+  // Every reason Start can be disabled is shown, because several of the fields
+  // are out of sight: the LoRA settings sit in a disclosure that starts closed.
+  const loraIssue = loraProblem(rank, alpha, maxSeq);
+  const runIssue = kind === "run" ? runProblem(lr, epochs) : null;
+  const ready = !disabled && why === null && !loraIssue && !runIssue && !sweepProblem;
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-3 rounded-lg border border-fog-line px-4 py-3">
@@ -220,6 +235,10 @@ export function RunForm({
                   {plan.runs.length} {plan.runs.length === 1 ? "run" : "runs"}: {plan.runs.map((r) => r.name).join(", ")}
                 </p>
                 {plan.skipped.length > 0 && <p>Already in the project, so left alone: {plan.skipped.join(", ")}</p>}
+                <p>
+                  Each run uses LoRA rank {rank.trim()}, alpha {alpha.trim()} and max sequence {maxSeq.trim()}. Change them under LoRA
+                  settings.
+                </p>
                 <p>Each run trains, merges and exports a GGUF of its own, so a sweep takes as long as all of them together.</p>
               </>
             ) : null}
@@ -253,7 +272,7 @@ export function RunForm({
           </label>
         </div>
       )}
-      <details className="text-xs text-fog">
+      <details className="text-xs text-fog" open={loraIssue !== null || undefined}>
         <summary className="cursor-pointer">LoRA settings</summary>
         <div className="mt-2 grid grid-cols-3 gap-3">
           <label className={label}>
@@ -270,6 +289,8 @@ export function RunForm({
           </label>
         </div>
       </details>
+      {loraIssue && <p className="text-xs text-amber-600">{loraIssue}</p>}
+      {runIssue && <p className="text-xs text-amber-600">{runIssue}</p>}
 
       {error && (
         <p role="alert" className="text-xs text-red-600">
@@ -283,7 +304,7 @@ export function RunForm({
           disabled={!ready || busy}
           className="cursor-pointer rounded-md bg-ink px-3 py-1.5 text-xs font-medium text-paper disabled:cursor-default disabled:opacity-50"
         >
-          {busy ? "Starting…" : census ? "Run census" : sweeping ? `Start ${plan?.runs.length ?? 0}-run sweep` : "Start training"}
+          {busy ? "Starting…" : census ? "Run census" : sweeping ? (plan ? `Start ${plan.runs.length}-run sweep` : "Start sweep") : "Start training"}
         </button>
       </div>
     </form>

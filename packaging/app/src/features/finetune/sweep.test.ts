@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { advance, begin, headline, isFinished, lowestLoss, parseEpochs, parseRates, planSweep, position, refuse } from "./sweep.ts";
+import { advance, begin, headline, isFinished, isStopping, lowestLoss, parseEpochs, parseRates, planSweep, position, refuse, requestStop } from "./sweep.ts";
 import type { JobRequest } from "../../lib/types.ts";
 
 const base: JobRequest = {
@@ -73,14 +73,54 @@ test("a failed run is recorded with its reason and the sweep carries on", () => 
   assert.deepEqual(s.results[0], { name: "e2-lr1e-4", status: "failed", finalLoss: null, note: "out of memory" });
 });
 
-test("skipping a run carries on, and stopping ends the sweep", () => {
+test("skipping a run carries on with the rest", () => {
   let s = begin(planSweep(base, [2, 3, 4], [1e-4], []))!;
-  s = advance({ ...s, skipCurrent: true }, "e2-lr1e-4", { kind: "cancelled" });
+  s = advance(s, "e2-lr1e-4", { kind: "cancelled" });
   assert.equal(s.results[0].note, "Skipped");
   assert.equal(isFinished(s), false);
-  s = advance({ ...s, stopped: true }, "e3-lr1e-4", { kind: "cancelled" });
+  assert.equal(s.queue.length, 2);
+});
+
+test("a stop waits for the run in flight: the sweep is stopping, not finished", () => {
+  let s = begin(planSweep(base, [2, 3, 4], [1e-4], []))!;
+  s = advance(s, "e2-lr1e-4", { kind: "done", finalLoss: 1 });
+  s = requestStop(s, true);
+  assert.equal(isStopping(s), true);
+  assert.equal(isFinished(s), false, "the run in flight has not ended yet");
+  assert.equal(headline(s), "Stopping after run 2 of 3");
+  assert.equal(s.results.length, 1, "the run in flight is not counted as done");
+
+  s = advance(s, "e3-lr1e-4", { kind: "cancelled" });
   assert.equal(s.results[1].note, "Sweep stopped");
-  assert.equal(isFinished(s), true, "a run is still left in the queue, but stopped wins");
+  assert.equal(isFinished(s), true);
+  assert.equal(isStopping(s), false);
+  assert.equal(s.queue.length, 0, "the run still queued will never start");
+  assert.equal(headline(s), "Sweep stopped after 2 of 3 runs");
+});
+
+test("a stop pressed while a merge cannot be interrupted still ends the sweep once that run finishes", () => {
+  let s = begin(planSweep(base, [2, 3, 4], [1e-4], []))!;
+  s = requestStop(s, true);
+  s = advance(s, "e2-lr1e-4", { kind: "done", finalLoss: 0.4 });
+  assert.equal(s.results[0].status, "done", "it finished, so it is recorded as done");
+  assert.equal(isFinished(s), true, "and nothing after it starts");
+  assert.equal(headline(s), "Sweep stopped after 1 of 3 runs");
+});
+
+test("a stop between two runs, with nothing in flight, ends the sweep at once", () => {
+  let s = begin(planSweep(base, [2, 3, 4], [1e-4], []))!;
+  s = advance(s, "e2-lr1e-4", { kind: "done", finalLoss: 1 });
+  s = requestStop(s, false);
+  assert.equal(isFinished(s), true, "otherwise it would wait forever for a run that is not coming");
+  assert.equal(isStopping(s), false);
+  assert.equal(headline(s), "Sweep stopped after 1 of 3 runs");
+});
+
+test("a request refused while stopping does not leave the queue behind", () => {
+  let s = begin(planSweep(base, [2, 3], [1e-4], []))!;
+  s = requestStop(s, true);
+  s = refuse(s, "e2-lr1e-4", "no base model");
+  assert.equal(isFinished(s), true);
 });
 
 test("a request the backend refuses is recorded and does not stall the queue", () => {

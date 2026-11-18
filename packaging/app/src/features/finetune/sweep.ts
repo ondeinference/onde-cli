@@ -80,10 +80,9 @@ export interface SweepState {
   queue: JobRequest[];
   /** What each finished or refused run came to. */
   results: SweepResult[];
-  /** The user asked to stop: nothing more starts after the current run. */
+  /** The user asked to stop. The queue is emptied as soon as the run in flight
+   *  has ended, so nothing more starts after it. */
   stopped: boolean;
-  /** The user asked to skip the current run and carry on. */
-  skipCurrent: boolean;
 }
 
 export function begin(plan: SweepPlan): SweepState | null {
@@ -93,13 +92,13 @@ export function begin(plan: SweepPlan): SweepState | null {
     queue: plan.runs.map((r) => r.request),
     results: [],
     stopped: false,
-    skipCurrent: false,
   };
 }
 
 /** What the header says: where a sweep in progress is, or how far a finished one
  *  got. A stopped sweep did not reach its last runs, so it must not claim to. */
 export function headline(s: SweepState): string {
+  if (isStopping(s)) return `Stopping after run ${position(s)} of ${s.total}`;
   if (!isFinished(s)) return `Sweep, run ${position(s)} of ${s.total}`;
   return s.results.length < s.total
     ? `Sweep stopped after ${s.results.length} of ${s.total} runs`
@@ -108,7 +107,21 @@ export function headline(s: SweepState): string {
 
 /** 1-based number of the run in progress. */
 export const position = (s: SweepState): number => s.results.length + 1;
-export const isFinished = (s: SweepState): boolean => s.queue.length === 0 || s.stopped;
+/** Nothing is left to start. A stopped sweep is not finished until the run that
+ *  was in flight has ended, so the screen does not claim it is over (or swap the
+ *  Stop button for Cancel) while that run is still winding down. */
+export const isFinished = (s: SweepState): boolean => s.queue.length === 0;
+
+/** Stop was asked for and the run in flight has not ended yet. */
+export const isStopping = (s: SweepState): boolean => s.stopped && !isFinished(s);
+
+/** The user pressed Stop. With a run in flight, it is allowed to end first
+ *  (training stops after its step, a merge or export finishes). With none, which
+ *  is the instant between two runs, there is nothing to wait for, so the sweep
+ *  ends now. */
+export function requestStop(s: SweepState, runInFlight: boolean): SweepState {
+  return { ...s, stopped: true, queue: runInFlight ? s.queue : [] };
+}
 
 export type Outcome =
   | { kind: "done"; finalLoss: number | null }
@@ -124,15 +137,14 @@ export function advance(s: SweepState, name: string, outcome: Outcome): SweepSta
       : outcome.kind === "failed"
         ? { name, status: "failed", finalLoss: null, note: outcome.message }
         : { name, status: "cancelled", finalLoss: null, note: s.stopped ? "Sweep stopped" : "Skipped" };
-  // Cancelling a run is either "skip this one" or "stop everything". Anything
-  // else that ends a run, including a failure, carries on with the rest.
-  const stopped = s.stopped;
+  // Cancelling a run is either "skip this one" or "stop everything", and the
+  // note above follows `stopped`. Anything else that ends a run, including a
+  // failure, carries on with the rest. A stop empties the queue, whatever the
+  // run ended with: it may have finished before the cancel landed.
   return {
     ...s,
-    queue: s.queue.slice(1),
+    queue: s.stopped ? [] : s.queue.slice(1),
     results: [...s.results, result],
-    skipCurrent: false,
-    stopped,
   };
 }
 
@@ -140,7 +152,7 @@ export function advance(s: SweepState, name: string, outcome: Outcome): SweepSta
 export function refuse(s: SweepState, name: string, message: string): SweepState {
   return {
     ...s,
-    queue: s.queue.slice(1),
+    queue: s.stopped ? [] : s.queue.slice(1),
     results: [...s.results, { name, status: "refused", finalLoss: null, note: message }],
   };
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc } from "@/lib/ipc";
 import type { JobRequest, RunEvent, StepRecord } from "@/lib/types";
-import { apply, defaultRunName, elapsedFromSteps, idle, positionFromSteps, type JobState } from "./job";
+import { apply, defaultRunName, elapsedFromSteps, idle, isRunning, positionFromSteps, type JobState } from "./job";
 import * as sweepLogic from "./sweep";
 import type { SweepPlan, SweepState } from "./sweep";
 
@@ -175,19 +175,20 @@ export function useJob() {
     if (!sweepLogic.isFinished(next)) void launchNext();
   }, [state.outcome, state.info, launchNext, setSweep]);
 
-  /** Cancel the current run and carry on with the rest of the sweep. */
-  const skipRun = useCallback(() => {
-    const current = sweepRef.current;
-    if (current) setSweep({ ...current, skipCurrent: true });
-    cancel();
-  }, [cancel, setSweep]);
+  /** Cancel the current run and carry on with the rest of the sweep. A cancelled
+   *  run of a sweep that is not stopping counts as skipped. */
+  const skipRun = useCallback(() => cancel(), [cancel]);
 
-  /** Cancel the current run and start no more. */
+  /** Cancel the current run and start no more. The sweep reads as stopping until
+   *  that run has ended. With no run in flight (the instant between two runs)
+   *  there is nothing to wait for and it ends at once. */
   const stopSweep = useCallback(() => {
     const current = sweepRef.current;
-    if (current) setSweep({ ...current, stopped: true });
-    cancel();
-  }, [cancel, setSweep]);
+    if (!current) return;
+    const inFlight = isRunning(state);
+    setSweep(sweepLogic.requestStop(current, inFlight));
+    if (inFlight) cancel();
+  }, [cancel, setSweep, state]);
 
   const dismiss = useCallback(() => {
     steps.current = [];
