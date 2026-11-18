@@ -59,6 +59,8 @@ More ways, including pip/uv, .NET, Dart pub, winget, Scoop and pre-built binarie
 
 Dual-licensed under [MIT](https://github.com/ondeinference/onde-cli/blob/main/LICENSE-MIT) and [Apache 2.0](https://github.com/ondeinference/onde-cli/blob/main/LICENSE-APACHE).
 
+The code is open source. The Onde name and logo are not covered by the licence: see [TRADEMARK.md](TRADEMARK.md).
+
 ## Copyright
 
 © 2026 [Splitfire AB](https://5mb.app) ([Onde Inference](https://ondeinference.com)).
