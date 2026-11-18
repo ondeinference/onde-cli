@@ -1,6 +1,7 @@
 mod commands;
 mod desktop;
 mod error;
+mod picker;
 mod state;
 
 #[cfg(test)]
@@ -13,12 +14,29 @@ pub fn run() {
         eprintln!("could not prepare the storage directory: {e}");
     }
 
+    // A folder the user linked in an earlier session is reopened before any
+    // project is read. Outside the sandbox there is nothing to reopen.
+    let links = desktop::links::Links::new(onde_cli::paths::onde_root().join("links.json"));
+    if desktop::storage::is_sandboxed()
+        && let Some(dir) = links.restore()
+    {
+        onde_cli::paths::set_projects_dir(Some(dir));
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .manage(state::PendingSignIn::default())
+        .manage(links)
         .invoke_handler(tauri::generate_handler![
             commands::app::app_build,
+            commands::links::projects_location,
+            commands::links::link_projects_folder,
+            commands::links::unlink_projects_folder,
+            commands::projects::list_projects,
+            commands::projects::project_detail,
+            commands::projects::run_steps,
+            commands::projects::import_dataset,
             commands::auth::current_user,
             commands::auth::sign_in,
             commands::auth::sign_up,

@@ -49,7 +49,7 @@ pub struct OndeProject {
 
 /// Root directory for all onde projects.
 pub fn projects_root() -> PathBuf {
-    crate::paths::onde_root().join("projects")
+    crate::paths::projects_dir()
 }
 
 /// Create a new project workspace on disk and return its metadata.
@@ -352,5 +352,321 @@ fn format_age(secs: u64) -> String {
         format!("{}h ago", secs / 3600)
     } else {
         format!("{}d ago", secs / 86400)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runs
+// ---------------------------------------------------------------------------
+
+/// Every run in a project, newest first.
+///
+/// Runs made by [`crate::pipeline`] are read from their `run.json`. A
+/// directory without one (a run made by hand, or by an older version) is
+/// listed as [`crate::pipeline::RunStatus::Imported`], with the adapter and GGUF it holds.
+pub fn list_runs(project: &OndeProject) -> Vec<crate::pipeline::RunRecord> {
+    use crate::pipeline::{RunRecord, RunStatus, read_record};
+
+    let Ok(entries) = std::fs::read_dir(&project.runs_dir) else {
+        return Vec::new();
+    };
+    let mut runs: Vec<RunRecord> = Vec::new();
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        if let Ok(record) = read_record(&dir) {
+            runs.push(record);
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        let gguf = first_gguf(&dir);
+        let adapter = ["lora/lora_adapter.safetensors", "lora_adapter.safetensors"]
+            .iter()
+            .map(|p| dir.join(p))
+            .find(|p| p.is_file());
+        if gguf.is_none() && adapter.is_none() {
+            // Nothing a user could use: a failed or empty directory.
+            continue;
+        }
+        let modified = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |d| d.as_secs());
+        runs.push(RunRecord {
+            name,
+            spec: None,
+            status: RunStatus::Imported,
+            backend: None,
+            backend_note: None,
+            started_at: modified,
+            finished_at: Some(modified),
+            steps: 0,
+            skipped: 0,
+            epoch_loss: Vec::new(),
+            adapter_path: adapter,
+            gguf_size: gguf
+                .as_ref()
+                .and_then(|g| g.metadata().ok())
+                .map(|m| m.len()),
+            gguf_path: gguf,
+            error: None,
+        });
+    }
+    runs.sort_by_key(|r| std::cmp::Reverse(r.started_at));
+    runs
+}
+
+fn first_gguf(dir: &Path) -> Option<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "gguf"))
+        .collect();
+    found.sort();
+    found.into_iter().next()
+}
+
+// ---------------------------------------------------------------------------
+// Datasets
+// ---------------------------------------------------------------------------
+
+/// What a dataset file holds, for showing before training.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DatasetInfo {
+    pub rows: usize,
+    /// Rows written as `{"text": ...}`. The fine-tuner puts loss on every token.
+    pub text_rows: usize,
+    /// Rows written as `{"messages": [...]}`. Loss is on the assistant turns only.
+    pub message_rows: usize,
+    /// Message rows that begin with a system turn.
+    pub with_system: usize,
+    /// Up to three of the first rows, as written.
+    pub sample: Vec<serde_json::Value>,
+}
+
+/// Check a JSONL dataset line by line. The error names the first bad line.
+pub fn inspect_dataset(path: &Path) -> Result<DatasetInfo> {
+    use std::io::BufRead;
+
+    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut info = DatasetInfo {
+        rows: 0,
+        text_rows: 0,
+        message_rows: 0,
+        with_system: 0,
+        sample: Vec::new(),
+    };
+    for (index, line) in std::io::BufReader::new(file).lines().enumerate() {
+        let line = line.with_context(|| format!("reading line {}", index + 1))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let n = index + 1;
+        let value: serde_json::Value =
+            serde_json::from_str(&line).with_context(|| format!("line {n} is not JSON"))?;
+        if let Some(text) = value.get("text") {
+            anyhow::ensure!(
+                text.as_str().is_some_and(|t| !t.trim().is_empty()),
+                "line {n}: \"text\" must be a non-empty string"
+            );
+            info.text_rows += 1;
+        } else if let Some(messages) = value.get("messages") {
+            let messages = messages
+                .as_array()
+                .with_context(|| format!("line {n}: \"messages\" must be an array"))?;
+            let mut assistant = false;
+            for m in messages {
+                let role = m.get("role").and_then(|r| r.as_str()).unwrap_or("");
+                let content = m.get("content").and_then(|c| c.as_str());
+                anyhow::ensure!(
+                    matches!(role, "system" | "user" | "assistant"),
+                    "line {n}: role must be system, user or assistant, got {role:?}"
+                );
+                anyhow::ensure!(
+                    content.is_some(),
+                    "line {n}: every message needs a string \"content\""
+                );
+                if role == "assistant" && content.is_some_and(|c| !c.trim().is_empty()) {
+                    assistant = true;
+                }
+            }
+            anyhow::ensure!(
+                assistant,
+                "line {n}: no assistant turn with content, so nothing to learn from"
+            );
+            if messages
+                .first()
+                .and_then(|m| m.get("role"))
+                .and_then(|r| r.as_str())
+                == Some("system")
+            {
+                info.with_system += 1;
+            }
+            info.message_rows += 1;
+        } else {
+            anyhow::bail!("line {n}: expected a \"text\" or a \"messages\" field");
+        }
+        info.rows += 1;
+        if info.sample.len() < 3 {
+            info.sample.push(value);
+        }
+    }
+    anyhow::ensure!(info.rows > 0, "{} has no rows", path.display());
+    Ok(info)
+}
+
+/// Validate `src` and copy it to the project's `dataset/train.jsonl`. An
+/// existing training file is kept as `train.{unix time}.jsonl`.
+pub fn import_dataset(project: &OndeProject, src: &Path) -> Result<DatasetInfo> {
+    let info = inspect_dataset(src)?;
+    if let Some(dir) = project.dataset_path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    if project.dataset_path.exists() {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let backup = project
+            .dataset_path
+            .with_file_name(format!("train.{ts}.jsonl"));
+        std::fs::rename(&project.dataset_path, &backup)
+            .with_context(|| format!("keeping the old dataset as {}", backup.display()))?;
+    }
+    std::fs::copy(src, &project.dataset_path)
+        .with_context(|| format!("copying to {}", project.dataset_path.display()))?;
+    Ok(info)
+}
+
+#[cfg(test)]
+mod run_and_dataset_tests {
+    use super::*;
+    use crate::pipeline::RunStatus;
+
+    fn project(root: &Path) -> OndeProject {
+        OndeProject {
+            repo_id: "o/p".into(),
+            base_model_id: "b".into(),
+            base_model_dir: String::new(),
+            project_dir: root.to_path_buf(),
+            dataset_path: root.join("dataset/train.jsonl"),
+            runs_dir: root.join("runs"),
+        }
+    }
+
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn hand_made_runs_are_listed_as_imported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = project(tmp.path());
+        write(&p.runs_dir.join("run7/model-q8_0.gguf"), "GGUF");
+        write(&p.runs_dir.join("e2/lora/lora_adapter.safetensors"), "x");
+        std::fs::create_dir_all(p.runs_dir.join("empty")).unwrap();
+        let mut names: Vec<_> = list_runs(&p)
+            .into_iter()
+            .map(|r| (r.name, r.status))
+            .collect();
+        names.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(
+            names,
+            vec![
+                ("e2".to_string(), RunStatus::Imported),
+                ("run7".to_string(), RunStatus::Imported)
+            ]
+        );
+    }
+
+    #[test]
+    fn messages_and_text_rows_are_counted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("t.jsonl");
+        write(
+            &file,
+            concat!(
+                r#"{"messages":[{"role":"system","content":"s"},{"role":"user","content":"u"},{"role":"assistant","content":"a"}]}"#,
+                "\n\n",
+                r#"{"messages":[{"role":"user","content":"u"},{"role":"assistant","content":"a"}]}"#,
+                "\n",
+                r#"{"text":"<|im_start|>user\nhi<|im_end|>"}"#,
+                "\n"
+            ),
+        );
+        let info = inspect_dataset(&file).unwrap();
+        assert_eq!(
+            (
+                info.rows,
+                info.message_rows,
+                info.text_rows,
+                info.with_system
+            ),
+            (3, 2, 1, 1)
+        );
+        assert_eq!(info.sample.len(), 3);
+    }
+
+    #[test]
+    fn bad_rows_are_named_by_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bad = |text: &str| {
+            let f = tmp.path().join("bad.jsonl");
+            write(&f, text);
+            format!("{:#}", inspect_dataset(&f).unwrap_err())
+        };
+        assert!(bad("{\"text\":\"ok\"}\nnot json\n").contains("line 2 is not JSON"));
+        assert!(
+            bad(r#"{"messages":[{"role":"user","content":"u"}]}"#).contains("no assistant turn")
+        );
+        assert!(bad(r#"{"messages":[{"role":"bot","content":"u"}]}"#).contains("role must be"));
+        assert!(bad(r#"{"text":"  "}"#).contains("non-empty"));
+        assert!(bad(r#"{"foo":1}"#).contains("expected a"));
+        assert!(bad("\n\n").contains("no rows"));
+    }
+
+    #[test]
+    fn importing_keeps_the_previous_dataset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = project(&tmp.path().join("proj"));
+        let a = tmp.path().join("a.jsonl");
+        let b = tmp.path().join("b.jsonl");
+        write(&a, "{\"text\":\"first\"}\n");
+        write(&b, "{\"text\":\"second\"}\n");
+        import_dataset(&p, &a).unwrap();
+        import_dataset(&p, &b).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&p.dataset_path).unwrap(),
+            "{\"text\":\"second\"}\n"
+        );
+        let kept: Vec<_> = std::fs::read_dir(p.dataset_path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("train.") && n != "train.jsonl")
+            .collect();
+        assert_eq!(kept.len(), 1, "{kept:?}");
+    }
+
+    #[test]
+    fn a_rejected_dataset_leaves_the_current_one_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = project(&tmp.path().join("proj"));
+        let good = tmp.path().join("good.jsonl");
+        let bad = tmp.path().join("bad.jsonl");
+        write(&good, "{\"text\":\"keep me\"}\n");
+        write(&bad, "oops\n");
+        import_dataset(&p, &good).unwrap();
+        assert!(import_dataset(&p, &bad).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&p.dataset_path).unwrap(),
+            "{\"text\":\"keep me\"}\n"
+        );
     }
 }

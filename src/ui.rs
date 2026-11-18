@@ -1869,6 +1869,18 @@ fn render_finetune_progress(frame: &mut Frame, app: &App, area: Rect) {
         Some(crate::finetune::FineTuneProgress::Done { adapter_path }) => {
             render_finetune_done(frame, app, adapter_path, content);
         }
+        Some(crate::finetune::FineTuneProgress::Cancelled) => {
+            frame.render_widget(
+                Paragraph::new("Cancelled. No adapter was written.")
+                    .style(Style::new().fg(C_MUTED)),
+                content,
+            );
+        }
+        // Never stored: see AuthEvent::FineTuneProgress in app.rs.
+        Some(
+            crate::finetune::FineTuneProgress::Started { .. }
+            | crate::finetune::FineTuneProgress::Step { .. },
+        ) => {}
         Some(crate::finetune::FineTuneProgress::Failed(msg)) => {
             let rows = Layout::vertical([
                 Constraint::Length(1), // label

@@ -19,6 +19,9 @@ function mergePatch(target, patch) {
   return out;
 }
 
+// PNG color type 6 is RGBA, and 4 is gray with alpha. The type sits at byte 25.
+const hasAlpha = (file) => [4, 6].includes(readFileSync(file)[25]);
+
 const errors = [];
 const fail = (m) => errors.push(m);
 
@@ -46,7 +49,12 @@ const check = (name, cfg, id) => {
   const ent = cfg.bundle?.macOS?.entitlements;
   if (ent && !existsSync(join(tauri, ent))) fail(`${name}: entitlements ${ent} not found`);
   for (const icon of cfg.bundle?.icon ?? []) {
-    if (!existsSync(join(tauri, icon))) fail(`${name}: icon ${icon} not found`);
+    const file = join(tauri, icon);
+    if (!existsSync(file)) {
+      fail(`${name}: icon ${icon} not found`);
+    } else if (icon.endsWith(".png") && !hasAlpha(file)) {
+      fail(`${name}: icon ${icon} has no alpha channel; tauri::generate_context! rejects it`);
+    }
   }
 };
 
@@ -74,7 +82,9 @@ for (const [file, id] of Object.entries(overlays)) {
   // check() already reported a missing file, so there is nothing to read.
   if (!existsSync(entPath)) continue;
   const ent = readFileSync(entPath, "utf8");
-  const wants = ["com.apple.security.network.server"];
+  // The bookmark entitlement lets the app reopen the user's linked ~/.onde at
+  // the next launch; without it every launch would ask for the folder again.
+  const wants = ["com.apple.security.network.server", "com.apple.security.files.bookmarks.app-scope"];
   if (file.includes("appstore")) wants.push("com.apple.security.app-sandbox");
   for (const key of wants) {
     if (!new RegExp(`<key>${key}</key>\\s*<true/>`).test(ent)) fail(`${file}: ${mac.entitlements} does not enable ${key}`);

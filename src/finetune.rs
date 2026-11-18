@@ -8,6 +8,8 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use candle_core::{D, DType, Device, Tensor, Var};
@@ -37,10 +39,52 @@ pub struct FineTuneConfig {
     pub epochs: usize,
     /// Maximum number of tokens per training example (default 512).
     pub max_seq_len: usize,
+    /// Set to `true` to stop after the current step. The run then reports
+    /// [`FineTuneProgress::Cancelled`] and writes no adapter.
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
+impl FineTuneConfig {
+    /// True once the caller has asked the run to stop.
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
+    }
+}
+
+/// Why a step changed no weights.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SkipReason {
+    /// The loss mask left no token to learn from.
+    NoMaskedTokens,
+    /// The loss was NaN or infinite.
+    NonFiniteLoss,
+    /// The gradient norm was zero or not finite, even after sanitising.
+    BadGradNorm,
+}
+
+/// Where the training maths runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FineTuneBackend {
+    /// MLX (Apple Silicon only).
+    Mlx,
+    /// candle on CPU.
+    Cpu,
+    /// candle on Metal (opt-in; the backward pass is broken in candle 0.10.x).
+    Metal,
 }
 
 /// Progress events emitted by the background fine-tuning thread.
 pub enum FineTuneProgress {
+    /// The backend this run will use. `fallback` says why the default pick was
+    /// not used, for example a missing `mlx.metallib`.
+    Started {
+        backend: FineTuneBackend,
+        fallback: Option<String>,
+    },
     /// Checking that the model directory and data file exist.
     Validating,
     /// Loading and memory-mapping the model weights.
@@ -55,8 +99,19 @@ pub enum FineTuneProgress {
         total_steps: usize,
         loss: f32,
     },
+    /// Everything about one step, sent next to [`FineTuneProgress::Training`].
+    /// `grad_norm` is the global norm before clipping, when it was computed.
+    Step {
+        epoch: usize,
+        step: usize,
+        loss: f32,
+        grad_norm: Option<f32>,
+        skipped: Option<SkipReason>,
+    },
     /// Writing the adapter file to disk.
     Saving,
+    /// The run stopped because [`FineTuneConfig::cancel`] was set.
+    Cancelled,
     /// Training finished successfully.
     Done { adapter_path: PathBuf },
     /// An unrecoverable error occurred.
@@ -98,69 +153,64 @@ struct TrainingExample {
     mask: Vec<bool>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Backend {
-    /// MLX (Apple Silicon only).
-    Mlx,
-    /// candle on CPU.
-    Cpu,
-    /// candle on Metal (opt-in; the backward pass is broken in candle 0.10.x).
-    Metal,
-}
-
 const MLX_AVAILABLE: bool = cfg!(all(target_os = "macos", target_arch = "aarch64"));
 
 /// `ONDE_FINETUNE_BACKEND=mlx|cpu|metal`. Default is MLX on macOS arm64 and
 /// CPU everywhere else. `ONDE_FINETUNE_METAL=1` is kept as an alias for `metal`.
-fn select_backend() -> Result<Backend> {
+/// The second value says why the default pick was not used.
+fn select_backend() -> Result<(FineTuneBackend, Option<String>)> {
     let choice = std::env::var("ONDE_FINETUNE_BACKEND").ok();
     let mut auto_mlx = false;
     let backend = match choice.as_deref().map(str::trim) {
         None | Some("") => {
             if std::env::var("ONDE_FINETUNE_METAL").is_ok() {
-                Backend::Metal
+                FineTuneBackend::Metal
             } else if MLX_AVAILABLE {
                 auto_mlx = true;
-                Backend::Mlx
+                FineTuneBackend::Mlx
             } else {
-                Backend::Cpu
+                FineTuneBackend::Cpu
             }
         }
-        Some("mlx") => Backend::Mlx,
-        Some("cpu") => Backend::Cpu,
-        Some("metal") => Backend::Metal,
+        Some("mlx") => FineTuneBackend::Mlx,
+        Some("cpu") => FineTuneBackend::Cpu,
+        Some("metal") => FineTuneBackend::Metal,
         Some(other) => {
             anyhow::bail!("unknown ONDE_FINETUNE_BACKEND {other:?}; expected mlx, cpu or metal")
         }
     };
-    if backend == Backend::Mlx && !MLX_AVAILABLE {
+    if backend == FineTuneBackend::Mlx && !MLX_AVAILABLE {
         anyhow::bail!("the MLX backend is only available on macOS arm64");
     }
-    if backend == Backend::Metal && !cfg!(target_os = "macos") {
+    if backend == FineTuneBackend::Metal && !cfg!(target_os = "macos") {
         anyhow::bail!("the Metal backend is only available on macOS");
     }
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    if backend == Backend::Mlx
+    if backend == FineTuneBackend::Mlx
         && let Err(e) = mlx::metal_ready()
     {
         // The default pick must not turn a missing mlx.metallib into a failed
         // run, so it drops to CPU. An explicit request is told why instead.
         if auto_mlx {
             eprintln!("[finetune] MLX is unavailable ({e:#}); using CPU");
-            return Ok(Backend::Cpu);
+            return Ok((
+                FineTuneBackend::Cpu,
+                Some(format!("MLX is unavailable: {e:#}")),
+            ));
         }
         return Err(e);
     }
     let _ = auto_mlx;
-    Ok(backend)
+    Ok((backend, None))
 }
 
 fn run_finetune(
     config: &FineTuneConfig,
     tx: &tokio::sync::mpsc::UnboundedSender<FineTuneProgress>,
 ) -> Result<()> {
-    let backend = select_backend()?;
+    let (backend, fallback) = select_backend()?;
     eprintln!("[finetune] backend: {backend:?}");
+    let _ = tx.send(FineTuneProgress::Started { backend, fallback });
 
     // Validate, parse config and tokenise first. Nothing has touched the model
     // weights yet, so the MLX path never maps them through candle as well.
@@ -168,17 +218,17 @@ fn run_finetune(
 
     match backend {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        Backend::Mlx => mlx::train_mlx(config, &model_cfg, &examples, tx),
+        FineTuneBackend::Mlx => mlx::train_mlx(config, &model_cfg, &examples, tx),
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        Backend::Mlx => unreachable!("select_backend rejects MLX on this target"),
-        Backend::Cpu => train_candle(config, &model_cfg, &examples, Device::Cpu, tx),
+        FineTuneBackend::Mlx => unreachable!("select_backend rejects MLX on this target"),
+        FineTuneBackend::Cpu => train_candle(config, &model_cfg, &examples, Device::Cpu, tx),
         #[cfg(target_os = "macos")]
-        Backend::Metal => {
+        FineTuneBackend::Metal => {
             let device = Device::new_metal(0).unwrap_or(Device::Cpu);
             train_candle(config, &model_cfg, &examples, device, tx)
         }
         #[cfg(not(target_os = "macos"))]
-        Backend::Metal => unreachable!("select_backend rejects Metal on this target"),
+        FineTuneBackend::Metal => unreachable!("select_backend rejects Metal on this target"),
     }
 }
 
@@ -394,6 +444,10 @@ fn train_candle(
 
     for epoch in 0..config.epochs {
         for (step, example) in examples.iter().enumerate() {
+            if config.is_cancelled() {
+                let _ = tx.send(FineTuneProgress::Cancelled);
+                return Ok(());
+            }
             let seq_len = example.tokens.len();
 
             let input_ids = Tensor::from_slice(example.tokens.as_slice(), (1, seq_len), &device)
@@ -436,6 +490,13 @@ fn train_candle(
                         total_steps,
                         loss: 0.0,
                     });
+                    let _ = tx.send(FineTuneProgress::Step {
+                        epoch: epoch + 1,
+                        step: step + 1,
+                        loss: 0.0,
+                        grad_norm: None,
+                        skipped: Some(SkipReason::NoMaskedTokens),
+                    });
                     continue;
                 }
 
@@ -470,6 +531,13 @@ fn train_candle(
                     step: step + 1,
                     total_steps,
                     loss: loss_val,
+                });
+                let _ = tx.send(FineTuneProgress::Step {
+                    epoch: epoch + 1,
+                    step: step + 1,
+                    loss: loss_val,
+                    grad_norm: None,
+                    skipped: Some(SkipReason::NonFiniteLoss),
                 });
                 continue;
             }
@@ -551,6 +619,13 @@ fn train_candle(
                     step + 1,
                     seq_len
                 );
+                let _ = tx.send(FineTuneProgress::Step {
+                    epoch: epoch + 1,
+                    step: step + 1,
+                    loss: loss_val,
+                    grad_norm: Some(total_norm as f32),
+                    skipped: Some(SkipReason::BadGradNorm),
+                });
                 continue;
             }
 
@@ -576,6 +651,13 @@ fn train_candle(
                 step: step + 1,
                 total_steps,
                 loss: loss_val,
+            });
+            let _ = tx.send(FineTuneProgress::Step {
+                epoch: epoch + 1,
+                step: step + 1,
+                loss: loss_val,
+                grad_norm: Some(total_norm as f32),
+                skipped: None,
             });
         }
     }

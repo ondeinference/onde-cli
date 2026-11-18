@@ -19,11 +19,26 @@ use half::f16;
 
 /// Target data type for the exported GGUF tensors.
 #[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GgufDtype {
+    #[serde(rename = "f16")]
     F16,
+    #[serde(rename = "q8_0")]
     Q8_0,
     /// llama.cpp's `Q4_K_M` mix: Q4_K weights, Q6_K for the sensitive tensors.
+    #[serde(rename = "q4_k_m")]
     Q4KM,
+}
+
+impl GgufDtype {
+    /// The short name used in file names and `run.json`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::F16 => "f16",
+            Self::Q8_0 => "q8_0",
+            Self::Q4KM => "q4_k_m",
+        }
+    }
 }
 
 /// Configuration for a GGUF export run.
@@ -68,20 +83,6 @@ impl GgufConfig {
             }
         }
         entries
-    }
-
-    #[cfg(test)]
-    fn named(name: &str) -> Self {
-        Self {
-            model_dir: PathBuf::new(),
-            output_path: PathBuf::new(),
-            dtype: GgufDtype::Q8_0,
-            name: name.to_string(),
-            description: None,
-            license: None,
-            base_model_repo: None,
-            base_model_name: None,
-        }
     }
 
     fn has_base_model(&self) -> bool {
@@ -1328,107 +1329,78 @@ mod tests {
         let _ = std::fs::remove_dir_all(&work);
         std::fs::create_dir_all(&work).unwrap();
 
-        // 1. Fine-tune.
-        let lora_dir = work.join("lora");
-        let (ft_tx, mut ft_rx) = tokio::sync::mpsc::unbounded_channel();
-        crate::finetune::start_finetune(
-            crate::finetune::FineTuneConfig {
-                model_dir: base_dir.clone(),
-                data_path,
-                output_dir: lora_dir.clone(),
-                lora_rank: 8,
-                lora_alpha: 16.0,
-                learning_rate: std::env::var("ONDE_TEST_LR")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(1e-4),
-                epochs: std::env::var("ONDE_TEST_EPOCHS")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(2),
-                max_seq_len: std::env::var("ONDE_TEST_MAX_SEQ_LEN")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(512),
+        // 1-3. Fine-tune, merge and export through the pipeline the desktop app
+        //      uses. The run lands in `work`, so the layout is unchanged:
+        //      `lora/`, and `finetuned-<dtype>.gguf` next to it.
+        let env_num = |key: &str| std::env::var(key).ok();
+        let dtype = match std::env::var("ONDE_TEST_DTYPE").as_deref() {
+            Ok("f16") => GgufDtype::F16,
+            Ok("q4_k_m") => GgufDtype::Q4KM,
+            _ => GgufDtype::Q8_0,
+        };
+        std::fs::remove_dir_all(&work).unwrap();
+        let project = crate::project::OndeProject {
+            repo_id: "test/e2e".into(),
+            base_model_id: String::new(),
+            base_model_dir: String::new(),
+            project_dir: work.parent().unwrap().to_path_buf(),
+            dataset_path: data_path.clone(),
+            runs_dir: work.parent().unwrap().to_path_buf(),
+        };
+        let spec = crate::pipeline::RunSpec {
+            name: work.file_name().unwrap().to_string_lossy().to_string(),
+            base_dir,
+            data_path,
+            lora_rank: 8,
+            lora_alpha: 16.0,
+            learning_rate: env_num("ONDE_TEST_LR")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1e-4),
+            epochs: env_num("ONDE_TEST_EPOCHS")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(2),
+            max_seq_len: env_num("ONDE_TEST_MAX_SEQ_LEN")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(512),
+            dtype,
+            gguf: crate::pipeline::GgufMeta {
+                name: "finetuned".into(),
+                ..Default::default()
             },
-            ft_tx,
-        );
-        let mut adapter_path = None;
-        let mut last_loss = f32::NAN;
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        rt.block_on(async {
-            while let Some(p) = ft_rx.recv().await {
-                match p {
-                    crate::finetune::FineTuneProgress::Training {
-                        loss,
-                        step,
-                        total_steps,
-                        epoch,
-                        ..
-                    } => {
-                        eprintln!("[e2e] epoch {epoch} step {step}/{total_steps} loss {loss:.4}");
-                        last_loss = loss;
-                    }
-                    crate::finetune::FineTuneProgress::Done { adapter_path: a } => {
-                        adapter_path = Some(a);
-                        break;
-                    }
-                    crate::finetune::FineTuneProgress::Failed(e) => panic!("fine-tune failed: {e}"),
-                    _ => {}
+            export: true,
+            keep_merged: false,
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        crate::pipeline::start_run(spec, &project, None, tx);
+        let mut record = None;
+        while let Some(event) = rx.blocking_recv() {
+            match event {
+                crate::pipeline::RunProgress::Training {
+                    epoch,
+                    step,
+                    total_steps,
+                    loss,
+                    ..
+                } => {
+                    eprintln!("[e2e] epoch {epoch} step {step}/{total_steps} loss {loss:.4}");
                 }
+                crate::pipeline::RunProgress::Done(r) => record = Some(*r),
+                crate::pipeline::RunProgress::Failed(e) => panic!("run failed: {e}"),
+                crate::pipeline::RunProgress::Cancelled => panic!("run cancelled"),
+                _ => {}
             }
-        });
-        let adapter_path = adapter_path.expect("fine-tune must produce an adapter");
-        eprintln!("[e2e] fine-tune done, last loss {last_loss}");
+        }
+        let record = record.expect("the run must finish");
+        eprintln!(
+            "[e2e] epoch losses {:?}, skipped {}",
+            record.epoch_loss, record.skipped
+        );
         assert!(
-            last_loss.is_finite(),
+            record.final_loss().is_some_and(f32::is_finite),
             "training loss is NaN/Inf — training diverged"
         );
-
-        // 2. Merge.
-        let merged_dir = work.join("merged");
-        let (mg_tx, mut mg_rx) = tokio::sync::mpsc::unbounded_channel();
-        crate::merge::start_merge(
-            crate::merge::MergeConfig {
-                base_dir,
-                adapter_path,
-                output_dir: merged_dir.clone(),
-            },
-            mg_tx,
-        );
-        let mut merged_ok = false;
-        rt.block_on(async {
-            while let Some(p) = mg_rx.recv().await {
-                match p {
-                    crate::merge::MergeProgress::Done { .. } => {
-                        merged_ok = true;
-                        break;
-                    }
-                    crate::merge::MergeProgress::Failed(e) => panic!("merge failed: {e}"),
-                    _ => {}
-                }
-            }
-        });
-        assert!(merged_ok, "merge did not complete");
-
-        // 3. Export GGUF. `ONDE_TEST_DTYPE` selects f16, q8_0 (default) or q4_k_m.
-        let (dtype, dtype_label) = match std::env::var("ONDE_TEST_DTYPE").as_deref() {
-            Ok("f16") => (GgufDtype::F16, "f16"),
-            Ok("q4_k_m") => (GgufDtype::Q4KM, "q4_k_m"),
-            _ => (GgufDtype::Q8_0, "q8_0"),
-        };
-        let gguf_path = work.join(format!("finetuned-{dtype_label}.gguf"));
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        run_gguf_export(
-            &GgufConfig {
-                model_dir: merged_dir,
-                output_path: gguf_path.clone(),
-                dtype,
-                ..GgufConfig::named("finetuned")
-            },
-            &tx,
-        )
-        .expect("GGUF export should succeed");
+        let gguf_path = record.gguf_path.expect("the run must export a GGUF");
+        assert!(work.join("steps.jsonl").exists() && work.join("run.json").exists());
 
         // 4. Load + run in mistral.rs. Query in the training distribution so a
         //    lightly fine-tuned model has something to say. `ONDE_TEST_EVAL_PROMPT`

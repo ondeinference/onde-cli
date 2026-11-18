@@ -7,6 +7,7 @@
 
 pub mod chat;
 pub mod config;
+pub mod eval;
 pub mod finetune;
 pub mod gguf;
 pub mod gresiq;
@@ -15,6 +16,8 @@ pub mod hf_clone;
 pub mod hf_search;
 pub mod hf_upload;
 pub mod merge;
+pub mod models;
 pub mod paths;
+pub mod pipeline;
 pub mod project;
 pub mod token;

@@ -31,6 +31,14 @@ rand = "0.9"
 smbcloud-auth-sdk = "0.3.34"
 smbcloud-model = "0.3.35"
 smbcloud-network = "0.3.35"
+base64 = "0.22"
+
+# The folder chooser and security-scoped bookmarks. Both are AppKit and Foundation
+# calls with no Tauri API, so they are used directly and only on macOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSString", "NSURL"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSWindow", "NSResponder", "NSApplication"] }
 
 [dev-dependencies]
 tempfile = "3"

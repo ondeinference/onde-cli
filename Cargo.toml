@@ -53,6 +53,8 @@ tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+# Eval patterns are written in Python regex syntax, lookaround included.
+fancy-regex = "0.14"
 half = "2"
 sha2 = "0.10"
 # onde = { path = "../onde" }
@@ -68,6 +70,9 @@ candle-core = { package = "onde-candle-core", version = "0.11.2", features = ["m
 # Windows and Intel Mac builds do not pull it in.
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 mlx-rs = "0.34.0"
+
+[dev-dependencies]
+tempfile = "3"
 
 # ---------------------------------------------------------------------------
 # Local development overrides
