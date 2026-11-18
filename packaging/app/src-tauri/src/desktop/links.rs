@@ -109,6 +109,8 @@ impl Links {
     pub fn link(&self, bookmark_data: &[u8]) -> Result<PathBuf, String> {
         let resolved = bookmark::resolve(bookmark_data).map_err(|e| e.to_string())?;
         let dir = projects_dir_in(&resolved.path)?;
+        // A fresh `.onde` has no `projects` yet. Make it before the write test.
+        std::fs::create_dir_all(&dir).map_err(|e| format!("creating {} ({e})", dir.display()))?;
         ensure_writable(&dir)?;
         write_file(&self.file, Some(bookmark_data)).map_err(|e| format!("saving the link: {e}"))?;
         *lock(&self.note) = None;
@@ -184,17 +186,20 @@ fn write_file(path: &Path, bookmark: Option<&[u8]>) -> std::io::Result<()> {
 
 /// The projects directory for a folder the user picked: the folder itself when
 /// it is named `projects`, otherwise its `projects` child. Picking `~/.onde` is
-/// the common case.
+/// the common case, and a `.onde` that has no `projects` yet (the app was
+/// installed before the CLI ever ran) is fine: [`Links::link`] creates it. Any
+/// other folder without a `projects` child is refused, so the app never adds
+/// directories to a folder that was not meant for it.
 pub fn projects_dir_in(picked: &Path) -> Result<PathBuf, String> {
     if picked.file_name().is_some_and(|n| n == "projects") {
         return Ok(picked.to_path_buf());
     }
     let child = picked.join("projects");
-    if child.is_dir() {
+    if child.is_dir() || picked.file_name().is_some_and(|n| n == ".onde") {
         return Ok(child);
     }
     Err(format!(
-        "{} has no \"projects\" folder. Pick the .onde folder or the projects folder inside it.",
+        "{} has no \"projects\" folder. Pick your .onde folder, or a folder named projects.",
         picked.display()
     ))
 }
@@ -212,6 +217,19 @@ pub fn ensure_writable(dir: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// A bookmark for a folder the test made, standing in for the one the
+    /// open panel would give.
+    fn bookmark_for(path: &Path) -> Vec<u8> {
+        #[cfg(target_os = "macos")]
+        {
+            bookmark::create_from_url(&bookmark::file_url(path)).unwrap()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            path.to_string_lossy().into_owned().into_bytes()
+        }
+    }
+
     #[test]
     fn the_onde_folder_or_its_projects_child_both_work() {
         let tmp = tempfile::tempdir().unwrap();
@@ -228,7 +246,29 @@ mod tests {
     fn a_folder_without_projects_is_refused_with_advice() {
         let tmp = tempfile::tempdir().unwrap();
         let err = projects_dir_in(tmp.path()).unwrap_err();
-        assert!(err.contains("Pick the .onde folder"), "{err}");
+        assert!(err.contains("Pick your .onde folder"), "{err}");
+    }
+
+    #[test]
+    fn a_fresh_onde_folder_is_accepted_and_its_projects_folder_created_on_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let onde = tmp.path().join(".onde");
+        std::fs::create_dir(&onde).unwrap();
+        assert_eq!(projects_dir_in(&onde).unwrap(), onde.join("projects"));
+
+        let links = Links::new(tmp.path().join("links.json"));
+        let data = bookmark_for(&onde);
+        let dir = links.link(&data).expect("a fresh .onde links");
+        assert_eq!(
+            dir.canonicalize().unwrap(),
+            onde.join("projects").canonicalize().unwrap()
+        );
+        assert!(onde.join("projects").is_dir());
+        // The folder was only made because it is named .onde.
+        let other = tmp.path().join("stuff");
+        std::fs::create_dir(&other).unwrap();
+        assert!(links.link(&bookmark_for(&other)).is_err());
+        assert!(!other.join("projects").exists());
     }
 
     #[test]

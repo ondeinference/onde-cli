@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ipc } from "@/lib/ipc";
 import {
   errorMessage,
@@ -197,10 +197,25 @@ export function ProjectDetail({ repoId, onBack }: { repoId: string; onBack: () =
   const [detail, setDetail] = useState<Detail | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Only the newest request may fill the page. Without this, a slow answer for
+  // project A that lands after B was opened would show A's data under B's name.
+  const latest = useRef(0);
+
   function load() {
-    ipc.projectDetail(repoId).then(setDetail).catch((e) => setError(errorMessage(e)));
+    const mine = ++latest.current;
+    ipc
+      .projectDetail(repoId)
+      .then((d) => mine === latest.current && setDetail(d))
+      .catch((e) => mine === latest.current && setError(errorMessage(e)));
   }
-  useEffect(load, [repoId]);
+  useEffect(() => {
+    setDetail(null);
+    setError(null);
+    load();
+    return () => {
+      latest.current++;
+    };
+  }, [repoId]);
 
   return (
     <div className="flex flex-col gap-4">

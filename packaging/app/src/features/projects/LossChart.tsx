@@ -4,14 +4,25 @@ const W = 560;
 const H = 96;
 const PAD = 4;
 
+/** Smallest and largest value. `Math.min(...values)` throws a RangeError once
+ *  an array passes about 100,000 entries, which a long run can reach. */
+function extent(values: number[]): [number, number] {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const v of values) {
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }
+  return [lo, hi];
+}
+
 function path(values: (number | null)[], log: boolean): string {
   const points = values
     .map((v, i) => [i, v] as const)
     .filter((p): p is readonly [number, number] => p[1] != null && Number.isFinite(p[1]) && (!log || p[1] > 0));
   if (points.length < 2) return "";
   const ys = points.map(([, v]) => (log ? Math.log10(v) : v));
-  const lo = Math.min(...ys);
-  const hi = Math.max(...ys);
+  const [lo, hi] = extent(ys);
   const span = hi - lo || 1;
   const last = values.length - 1 || 1;
   return points
@@ -45,7 +56,7 @@ export function LossChart({ steps }: { steps: StepRecord[] }) {
   const norms = kept.map((s) => s.grad_norm);
   const lossPath = path(loss, false);
   const normPath = path(norms, true);
-  const finiteNorms = norms.filter((n): n is number => n != null && Number.isFinite(n));
+  const normRange = extent(norms.filter((n): n is number => n != null && Number.isFinite(n)));
   const skipped = steps.length - kept.length;
 
   if (!lossPath) return <p className="mt-3 text-xs text-fog">Not enough steps to chart.</p>;
@@ -60,7 +71,7 @@ export function LossChart({ steps }: { steps: StepRecord[] }) {
         <Line
           label="Gradient norm (log scale)"
           d={normPath}
-          extra={`${Math.min(...finiteNorms).toFixed(1)} – ${Math.max(...finiteNorms).toFixed(1)}`}
+          extra={`${normRange[0].toFixed(1)} – ${normRange[1].toFixed(1)}`}
         />
       )}
     </div>
