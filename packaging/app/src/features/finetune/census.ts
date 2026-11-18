@@ -26,7 +26,10 @@ export function censusVerdict(steps: StepRecord[]): Verdict | null {
     return {
       level: "broken",
       headline: "No usable gradients",
-      detail: `All ${steps.length} steps were skipped. The backward pass is not producing numbers the optimizer can use.`,
+      detail:
+        skipped === steps.length
+          ? `All ${steps.length} steps were skipped. The backward pass is not producing numbers the optimizer can use.`
+          : `The ${steps.length} steps ran, but none reported a finite gradient norm, so there is nothing to judge. Check the backend before training.`,
     };
   }
   if (max >= BROKEN_NORM) {

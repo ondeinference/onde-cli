@@ -35,7 +35,7 @@ export function JobPanel({ job }: { job: Job }) {
   const leftOut = rowsLeftOut(job.datasetRows, position);
 
   return (
-    <section className="rounded-lg border border-fog-line px-4 py-3" aria-live="polite">
+    <section className="rounded-lg border border-fog-line px-4 py-3">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="truncate text-sm font-medium">{info.run}</h2>
@@ -143,6 +143,7 @@ export function JobPanel({ job }: { job: Job }) {
 
       {verdict && (
         <div
+          role="status"
           className={`mt-3 rounded-md border px-3 py-2 text-xs ${
             verdict.level === "ok"
               ? "border-fog-line"
@@ -159,7 +160,7 @@ export function JobPanel({ job }: { job: Job }) {
       )}
 
       {outcome?.kind === "done" && (
-        <p className="mt-3 text-xs text-fog">
+        <p role="status" className="mt-3 text-xs text-fog">
           {census
             ? "Census finished. It trained nothing and made no model."
             : `Finished${outcome.record.gguf_size ? `: ${outcome.record.gguf_path?.split("/").pop()} (${formatBytes(outcome.record.gguf_size)})` : ""}. Find it under Projects.`}
@@ -170,7 +171,7 @@ export function JobPanel({ job }: { job: Job }) {
           {outcome.message}
         </p>
       )}
-      {outcome?.kind === "cancelled" && <p className="mt-3 text-xs text-fog">Stopped. No adapter was written.</p>}
+      {outcome?.kind === "cancelled" && <p role="status" className="mt-3 text-xs text-fog">Stopped. No adapter was written.</p>}
       {outcome && (
         <button
           type="button"

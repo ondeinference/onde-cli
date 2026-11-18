@@ -47,3 +47,15 @@ test("a run where every step was skipped has no usable gradients", () => {
 test("broken wins over skipped", () => {
   assert.equal(censusVerdict([step(1e7), step(null, "bad_grad_norm")])!.level, "broken");
 });
+
+test("steps that ran without a usable norm are not reported as skipped", () => {
+  const v = censusVerdict([step(null), step(Number.NaN)])!;
+  assert.equal(v.level, "broken");
+  assert.doesNotMatch(v.detail, /were skipped/);
+  assert.match(v.detail, /ran, but none reported a finite gradient norm/);
+});
+
+test("when every step was skipped, it says so", () => {
+  const v = censusVerdict([step(null, "non_finite_loss"), step(null, "bad_grad_norm")])!;
+  assert.match(v.detail, /All 2 steps were skipped/);
+});

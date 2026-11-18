@@ -56,15 +56,19 @@ export function useJob() {
           ipc.runSteps(info.repo_id, info.run).catch(() => []),
           ipc.projectDetail(info.repo_id).catch(() => null),
         ]);
-        steps.current = recorded;
+        // Steps that arrived on the live channel while those fetches ran are in
+        // steps.current already. Keep them, and drop any the file also has.
+        const seen = new Set(recorded.map((r) => `${r.epoch}:${r.step}`));
+        const merged = [...recorded, ...steps.current.filter((r) => !seen.has(`${r.epoch}:${r.step}`))];
+        steps.current = merged;
         // The time estimate and the rows-left-out warning need what the first
         // screen knew: when training began, and how many rows the dataset has.
-        const elapsed = elapsedFromSteps(recorded);
+        const elapsed = elapsedFromSteps(merged);
         trainingStartedAt.current = elapsed === null ? null : Date.now() - elapsed;
         datasetRows.current = detail?.dataset.state === "ready" ? detail.dataset.rows : null;
         const epochs = detail?.runs.find((r) => r.name === info.run)?.spec?.epochs;
-        const position = epochs ? positionFromSteps(recorded, epochs) : null;
-        if (position) setState((s) => ({ ...s, phase: null, position }));
+        const position = epochs ? positionFromSteps(merged, epochs) : null;
+        if (position) setState((s) => (s.position ? { ...s, phase: null } : { ...s, phase: null, position }));
         redraw((n) => n + 1);
       })
       .catch(() => {});
