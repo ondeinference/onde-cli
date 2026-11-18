@@ -223,7 +223,7 @@ export function JobPanel({ job }: { job: Job }) {
           </table>
           {isFinished(sweep) && lowestLoss(sweep.results) && (
             <p className="mt-2 text-xs text-fog">
-              Lowest training loss: {lowestLoss(sweep.results)}. A low loss on the training set does not mean a better model, so check the replies before you pick one.
+              Lowest final training loss: {lowestLoss(sweep.results)} ({sweep.results.find((r) => r.name === lowestLoss(sweep.results))?.finalLoss?.toFixed(3)}). A low loss on the training set does not mean a better model, so check the replies before you pick one.
             </p>
           )}
         </div>

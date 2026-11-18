@@ -67,7 +67,7 @@ export function planSweep(
 
 export interface SweepResult {
   name: string;
-  status: RunStatus | "refused" | "skipped";
+  status: RunStatus | "refused";
   /** Mean loss of the last epoch, when the run got that far. */
   finalLoss: number | null;
   /** Why it did not finish, when it did not. */
