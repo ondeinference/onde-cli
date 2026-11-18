@@ -1,10 +1,14 @@
 import { isRunning } from "./job";
+import { isFinished } from "./sweep";
 import { JobPanel } from "./JobPanel";
 import { RunForm } from "./RunForm";
 import type { Job } from "./useJob";
 
 export function FinetuneView({ job }: { job: Job }) {
-  const running = isRunning(job.state);
+  // Between two runs of a sweep the outcome of the last is still on screen for
+  // an instant. The form stays hidden for the whole sweep.
+  const sweepActive = job.sweep !== null && !isFinished(job.sweep);
+  const running = isRunning(job.state) || sweepActive;
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -13,7 +17,7 @@ export function FinetuneView({ job }: { job: Job }) {
       </div>
       <JobPanel job={job} />
       {/* Hidden while a job's result is on screen, so the result is what you see. */}
-      {(!job.state.info || running) && <RunForm disabled={running} onStart={job.start} />}
+      {(!job.state.info && job.sweep === null) || running ? <RunForm disabled={running} onStart={job.start} onSweep={job.startSweep} /> : null}
     </div>
   );
 }

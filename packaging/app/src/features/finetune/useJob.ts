@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ipc } from "@/lib/ipc";
 import type { JobRequest, RunEvent, StepRecord } from "@/lib/types";
 import { apply, defaultRunName, elapsedFromSteps, idle, positionFromSteps, type JobState } from "./job";
+import * as sweepLogic from "./sweep";
+import type { SweepPlan, SweepState } from "./sweep";
 
 /** The running job as the screen sees it. It lives in `App`, so it survives
  *  switching tabs, and it reattaches to a job that kept running while the
@@ -16,6 +18,16 @@ export function useJob() {
   const datasetRows = useRef<number | null>(null);
   const [, redraw] = useState(0);
   const timer = useRef<number | undefined>(undefined);
+  // The queue of a sweep. It lives in a ref so the event handlers always see the
+  // current one, and is copied to state for the screen to draw. It is not kept
+  // across a reload: the run in progress reattaches, but the ones after it do not.
+  const sweepRef = useRef<SweepState | null>(null);
+  const [sweep, setSweepState] = useState<SweepState | null>(null);
+  const handledOutcome = useRef<unknown>(null);
+  const setSweep = useCallback((next: SweepState | null) => {
+    sweepRef.current = next;
+    setSweepState(next);
+  }, []);
 
   const scheduleRedraw = useCallback(() => {
     if (timer.current !== undefined) return;
@@ -113,19 +125,88 @@ export function useJob() {
     void ipc.cancelJob();
   }, []);
 
+  /** Start the next queued run of the sweep, recording any the backend refuses. */
+  const launchNext = useCallback(async () => {
+    for (;;) {
+      const current = sweepRef.current;
+      if (!current || sweepLogic.isFinished(current)) return;
+      const request = current.queue[0];
+      try {
+        await start(request, datasetRows.current);
+        return;
+      } catch (e) {
+        const message = e && typeof e === "object" && "message" in e ? String((e as { message: unknown }).message) : String(e);
+        setSweep(sweepLogic.refuse(current, request.name, message));
+      }
+    }
+  }, [start, setSweep]);
+
+  /** Run every planned run in turn. `rows` is the dataset size, for the warning
+   *  about rows the trainer leaves out. */
+  const startSweep = useCallback(
+    async (plan: SweepPlan, rows: number | null) => {
+      const first = sweepLogic.begin(plan);
+      if (!first) return;
+      datasetRows.current = rows;
+      handledOutcome.current = null;
+      setSweep(first);
+      await launchNext();
+    },
+    [launchNext, setSweep],
+  );
+
+  // When a run of a sweep ends, record how it went and start the next.
+  useEffect(() => {
+    const outcome = state.outcome;
+    const current = sweepRef.current;
+    if (!outcome || !current || handledOutcome.current === outcome) return;
+    handledOutcome.current = outcome;
+    const name = state.info?.run ?? "";
+    const next = sweepLogic.advance(
+      current,
+      name,
+      outcome.kind === "done"
+        ? { kind: "done", finalLoss: outcome.record.epoch_loss.at(-1) ?? null }
+        : outcome.kind === "failed"
+          ? { kind: "failed", message: outcome.message }
+          : { kind: "cancelled" },
+    );
+    setSweep(next);
+    if (!sweepLogic.isFinished(next)) void launchNext();
+  }, [state.outcome, state.info, launchNext, setSweep]);
+
+  /** Cancel the current run and carry on with the rest of the sweep. */
+  const skipRun = useCallback(() => {
+    const current = sweepRef.current;
+    if (current) setSweep({ ...current, skipCurrent: true });
+    cancel();
+  }, [cancel, setSweep]);
+
+  /** Cancel the current run and start no more. */
+  const stopSweep = useCallback(() => {
+    const current = sweepRef.current;
+    if (current) setSweep({ ...current, stopped: true });
+    cancel();
+  }, [cancel, setSweep]);
+
   const dismiss = useCallback(() => {
     steps.current = [];
     trainingStartedAt.current = null;
     datasetRows.current = null;
+    setSweep(null);
     setState(idle);
-  }, []);
+  }, [setSweep]);
 
   return {
     state,
     steps: steps.current,
     trainingStartedAt: trainingStartedAt.current,
     datasetRows: datasetRows.current,
+    sweep,
     start,
+    startSweep,
+    skipRun,
+    stopSweep,
     cancel,
     dismiss,
   };

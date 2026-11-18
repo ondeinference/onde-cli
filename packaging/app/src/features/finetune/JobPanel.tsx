@@ -2,6 +2,7 @@ import { LossChart } from "@/features/projects/LossChart";
 import { formatBytes } from "@/features/projects/format";
 import { censusVerdict } from "./census";
 import { formatDuration, isRunning, rowsLeftOut, secondsLeft, stepsDone } from "./job";
+import { headline as sweepHeadline, isFinished, lowestLoss } from "./sweep";
 import type { Job } from "./useJob";
 
 const BACKEND_NAME = { mlx: "MLX", cpu: "CPU", metal: "Metal" } as const;
@@ -25,6 +26,10 @@ export function JobPanel({ job }: { job: Job }) {
   if (!info) return null;
 
   const running = isRunning(state);
+  const sweep = job.sweep;
+  // Between two runs of a sweep the last one's outcome is on screen for an
+  // instant. Dismissing then would throw the sweep away, so there is no button.
+  const sweepActive = sweep !== null && !isFinished(sweep);
   const census = info.kind === "census";
   const total = position ? position.totalEpochs * position.totalSteps : 0;
   const elapsed = job.trainingStartedAt ? Date.now() - job.trainingStartedAt : 0;
@@ -40,7 +45,8 @@ export function JobPanel({ job }: { job: Job }) {
         <div className="min-w-0">
           <h2 className="truncate text-sm font-medium">{info.run}</h2>
           <p className="truncate text-xs text-fog">
-            {census ? "Gradient census" : "Training run"} · {info.repo_id}
+            {census ? "Gradient census" : sweep ? sweepHeadline(sweep) : "Training run"} ·{" "}
+            {info.repo_id}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -52,7 +58,27 @@ export function JobPanel({ job }: { job: Job }) {
               {BACKEND_NAME[state.backend.name]}
             </span>
           )}
-          {running && (
+          {running && sweepActive && (
+            <>
+              <button
+                type="button"
+                disabled={state.stopping}
+                onClick={job.skipRun}
+                className="cursor-pointer rounded-md border border-fog-line px-2.5 py-1 text-xs font-medium hover:bg-fog-line disabled:cursor-default disabled:opacity-60"
+              >
+                Skip run
+              </button>
+              <button
+                type="button"
+                disabled={state.stopping}
+                onClick={job.stopSweep}
+                className="cursor-pointer rounded-md border border-fog-line px-2.5 py-1 text-xs font-medium hover:bg-fog-line disabled:cursor-default disabled:opacity-60"
+              >
+                {state.stopping && sweep?.stopped ? "Stopping…" : "Stop sweep"}
+              </button>
+            </>
+          )}
+          {running && !sweepActive && (
             <button
               type="button"
               disabled={state.stopping}
@@ -172,7 +198,38 @@ export function JobPanel({ job }: { job: Job }) {
         </p>
       )}
       {outcome?.kind === "cancelled" && <p role="status" className="mt-3 text-xs text-fog">Stopped. No adapter was written.</p>}
-      {outcome && (
+      {sweep && sweep.results.length > 0 && (
+        <div className="mt-4">
+          <h3 className="text-xs font-medium">{isFinished(sweep) ? "Sweep finished" : "Sweep so far"}</h3>
+          <table className="mt-1 w-full text-left text-xs">
+            <thead className="text-fog">
+              <tr>
+                <th className="py-1 pr-3 font-normal">Run</th>
+                <th className="py-1 pr-3 font-normal">Result</th>
+                <th className="py-1 text-right font-normal">Final loss</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sweep.results.map((r) => (
+                <tr key={r.name} className="border-t border-fog-line">
+                  <td className="py-1 pr-3 font-medium">{r.name}</td>
+                  <td className={`py-1 pr-3 ${r.status === "failed" || r.status === "refused" ? "text-red-600" : "text-fog"}`}>
+                    {r.status === "done" ? "Done" : r.status === "cancelled" ? r.note : `${r.status === "refused" ? "Not started" : "Failed"}: ${r.note}`}
+                  </td>
+                  <td className="py-1 text-right tabular-nums">{r.finalLoss === null ? "" : r.finalLoss.toFixed(3)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {isFinished(sweep) && lowestLoss(sweep.results) && (
+            <p className="mt-2 text-xs text-fog">
+              Lowest training loss: {lowestLoss(sweep.results)}. A low loss on the training set does not mean a better model, so check the replies before you pick one.
+            </p>
+          )}
+        </div>
+      )}
+
+      {outcome && !sweepActive && (
         <button
           type="button"
           onClick={job.dismiss}

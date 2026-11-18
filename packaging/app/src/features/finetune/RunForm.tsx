@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { ipc } from "@/lib/ipc";
-import { errorMessage, type JobKind, type JobRequest, type ProjectSummary } from "@/lib/types";
+import { errorMessage, type JobRequest, type ProjectSummary } from "@/lib/types";
+import { MAX_SWEEP_RUNS, parseEpochs, parseRates, planSweep, type SweepPlan } from "./sweep";
+
+/** What the form can start. A sweep is several training runs. */
+type Mode = "census" | "run" | "sweep";
 
 const DTYPES = [
   { id: "q4_k_m", label: "Q4_K_M (smallest, the usual choice)" },
@@ -22,14 +26,20 @@ const num = (text: string) => (text.trim() === "" ? NaN : Number(text));
 export function RunForm({
   disabled,
   onStart,
+  onSweep,
 }: {
   /** A job is running, so a second cannot start. */
   disabled: boolean;
   onStart: (request: JobRequest, datasetRows: number | null) => Promise<void>;
+  onSweep: (plan: SweepPlan, datasetRows: number | null) => Promise<void>;
 }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [repoId, setRepoId] = useState("");
-  const [kind, setKind] = useState<JobKind>("census");
+  const [kind, setKind] = useState<Mode>("census");
+  const [sweepEpochs, setSweepEpochs] = useState("2, 3");
+  const [sweepRates, setSweepRates] = useState("5e-5, 1e-4");
+  // Names of the runs the project already has, so a sweep does not repeat them.
+  const [existing, setExisting] = useState<string[]>([]);
   const [name, setName] = useState("");
   const [lr, setLr] = useState("1e-4");
   const [epochs, setEpochs] = useState("2");
@@ -51,19 +61,62 @@ export function RunForm({
       .catch((e) => setError(errorMessage(e)));
   }, []);
 
+  useEffect(() => {
+    if (!repoId) return;
+    let current = true;
+    ipc
+      .projectDetail(repoId)
+      .then((d) => current && setExisting(d.runs.map((r) => r.name)))
+      .catch(() => current && setExisting([]));
+    return () => {
+      current = false;
+    };
+  }, [repoId, disabled]);
+
   const project = projects.find((p) => p.repo_id === repoId);
   const why = project ? blocked(project) : "there are no projects yet";
   const census = kind === "census";
+  const sweeping = kind === "sweep";
+
+  const epochList = parseEpochs(sweepEpochs);
+  const rateList = parseRates(sweepRates);
+  const base: JobRequest = {
+    repo_id: repoId,
+    kind: "run",
+    name: "",
+    learning_rate: 1e-4,
+    epochs: 1,
+    lora_rank: num(rank),
+    lora_alpha: num(alpha),
+    max_seq_len: num(maxSeq),
+    dtype,
+  };
+  const plan = epochList.ok && rateList.ok ? planSweep(base, epochList.values, rateList.values, existing) : null;
+  const sweepProblem = !sweeping
+    ? null
+    : !epochList.ok
+      ? epochList.error
+      : !rateList.ok
+        ? rateList.error
+        : plan && plan.runs.length === 0
+          ? "Every run in this grid already exists."
+          : plan && plan.runs.length > MAX_SWEEP_RUNS
+            ? `That is ${plan.runs.length} runs. The most one sweep can hold is ${MAX_SWEEP_RUNS}.`
+            : null;
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setBusy(true);
     try {
+      if (sweeping) {
+        if (plan && !sweepProblem) await onSweep(plan, project?.dataset_rows ?? null);
+        return;
+      }
       await onStart(
         {
           repo_id: repoId,
-          kind,
+          kind: census ? "census" : "run",
           name: census ? "" : name.trim(),
           learning_rate: num(lr),
           epochs: num(epochs),
@@ -83,16 +136,15 @@ export function RunForm({
 
   const field = "w-full rounded-md border border-fog-line bg-transparent px-3 py-1.5 text-sm outline-none focus:border-ink disabled:opacity-50";
   const label = "flex flex-col gap-1 text-xs text-fog";
-  const numbers = !census
-    ? Number.isFinite(num(lr)) && Number.isFinite(num(epochs))
-    : true;
+  const numbers = census || sweeping ? true : Number.isFinite(num(lr)) && Number.isFinite(num(epochs));
   const ready =
     !disabled &&
     why === null &&
     numbers &&
     Number.isFinite(num(rank)) &&
     Number.isFinite(num(alpha)) &&
-    Number.isFinite(num(maxSeq));
+    Number.isFinite(num(maxSeq)) &&
+    !sweepProblem;
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-3 rounded-lg border border-fog-line px-4 py-3">
@@ -122,15 +174,60 @@ export function RunForm({
           </span>
         </label>
         <label className="flex cursor-pointer items-start gap-2 text-sm">
-          <input type="radio" name="kind" checked={!census} onChange={() => setKind("run")} className="mt-1" />
+          <input type="radio" name="kind" checked={kind === "run"} onChange={() => setKind("run")} className="mt-1" />
           <span>
             Training run
             <span className="block text-xs text-fog">Train a LoRA adapter, merge it into the base model and export a GGUF.</span>
           </span>
         </label>
+        <label className="flex cursor-pointer items-start gap-2 text-sm">
+          <input type="radio" name="kind" checked={sweeping} onChange={() => setKind("sweep")} className="mt-1" />
+          <span>
+            Sweep
+            <span className="block text-xs text-fog">
+              Train once for each epoch count and learning rate you list, one after another, then compare them under Projects.
+            </span>
+          </span>
+        </label>
       </fieldset>
 
-      {!census && (
+      {sweeping && (
+        <div className="grid grid-cols-2 gap-3">
+          <label className={label}>
+            Epochs
+            <input className={field} value={sweepEpochs} onChange={(e) => setSweepEpochs(e.target.value)} disabled={disabled} spellCheck={false} />
+          </label>
+          <label className={label}>
+            Learning rates
+            <input className={field} value={sweepRates} onChange={(e) => setSweepRates(e.target.value)} disabled={disabled} spellCheck={false} />
+          </label>
+          <label className={label}>
+            Export as
+            <select className={field} value={dtype} onChange={(e) => setDtype(e.target.value as JobRequest["dtype"])} disabled={disabled}>
+              {DTYPES.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="col-span-2 text-xs text-fog" aria-live="polite">
+            {sweepProblem ? (
+              <p className="text-amber-600">{sweepProblem}</p>
+            ) : plan ? (
+              <>
+                <p>
+                  {plan.runs.length} {plan.runs.length === 1 ? "run" : "runs"}: {plan.runs.map((r) => r.name).join(", ")}
+                </p>
+                {plan.skipped.length > 0 && <p>Already in the project, so left alone: {plan.skipped.join(", ")}</p>}
+                <p>Each run trains, merges and exports a GGUF of its own, so a sweep takes as long as all of them together.</p>
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
+
+      {kind === "run" && (
         <div className="grid grid-cols-2 gap-3">
           <label className={label}>
             Run name
@@ -186,7 +283,7 @@ export function RunForm({
           disabled={!ready || busy}
           className="cursor-pointer rounded-md bg-ink px-3 py-1.5 text-xs font-medium text-paper disabled:cursor-default disabled:opacity-50"
         >
-          {busy ? "Starting…" : census ? "Run census" : "Start training"}
+          {busy ? "Starting…" : census ? "Run census" : sweeping ? `Start ${plan?.runs.length ?? 0}-run sweep` : "Start training"}
         </button>
       </div>
     </form>
