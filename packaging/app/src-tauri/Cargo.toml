@@ -2,7 +2,7 @@
 name = "onde-desktop"
 version = "0.6.1"
 edition = "2024"
-description = "Onde Desktop: fine-tune, chat with and publish models on your Mac."
+description = "Onde Desktop: fine-tune, chat with and publish models on your computer."
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -39,6 +39,15 @@ base64 = "0.22"
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSObject", "NSProcessInfo", "NSString", "NSURL"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSOpenPanel", "NSSavePanel", "NSPanel", "NSWindow", "NSResponder", "NSApplication"] }
+
+# Windows and Linux get their chooser from the dialog plugin, called from Rust
+# only. The webview is still granted no dialog permission.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+tauri-plugin-dialog = "2"
+
+# Keeps the PC from sleeping while a training job runs.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Power"] }
 
 [dev-dependencies]
 tempfile = "3"

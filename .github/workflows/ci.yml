@@ -43,6 +43,7 @@ jobs:
       dotnet: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.dotnet }}
       dart: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.dart }}
       workflows: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.workflows }}
+      desktop: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.desktop }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -75,6 +76,13 @@ jobs:
               - ".github/workflows/ci.yml"
             workflows:
               - ".github/workflows/**"
+            desktop:
+              - "packaging/app/**"
+              - "src/**"
+              - "build.rs"
+              - "Cargo.*"
+              - ".cargo/**"
+              - ".github/workflows/ci.yml"
 
   rust:
     name: Rust (fmt, clippy, test)
@@ -150,6 +158,77 @@ jobs:
       - name: Cargo check
         run: cargo check --locked --target aarch64-apple-darwin
 
+  # Onde Desktop: the config checks and a lint of the Tauri crate on the two
+  # desktop platforms it ships on. `tauri::generate_context!` needs a frontend
+  # build, so the web build runs first.
+  desktop-app:
+    name: Desktop app (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-26
+          - name: Windows
+            os: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      ONDE_APP_ID: ${{ secrets.ONDE_APP_ID || 'ci-placeholder' }}
+      ONDE_APP_SECRET: ${{ secrets.ONDE_APP_SECRET || 'ci-placeholder' }}
+      GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY || 'ci-placeholder' }}
+      GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET || 'ci-placeholder' }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN || 'ci-placeholder' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          package_json_file: packaging/app/package.json
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: packaging/app/pnpm-lock.yaml
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: packaging/app/src-tauri
+
+      - name: Install frontend dependencies
+        working-directory: packaging/app
+        run: pnpm install --frozen-lockfile
+
+      - name: Check the Tauri configs
+        working-directory: packaging/app
+        run: pnpm check:config
+
+      - name: Build the frontend
+        working-directory: packaging/app
+        run: pnpm build
+
+      - name: Lint
+        working-directory: packaging/app/src-tauri
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: packaging/app/src-tauri
+        run: cargo test --locked
+
   dotnet-tool:
     name: .NET tool launcher build
     needs: changes
@@ -210,6 +289,7 @@ jobs:
       - changes
       - rust
       - check-macos
+      - desktop-app
       - dotnet-tool
       - dart-package
       - actionlint

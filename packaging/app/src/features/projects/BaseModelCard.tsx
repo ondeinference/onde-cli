@@ -120,7 +120,7 @@ export function BaseModelCard({ detail, onChanged }: { detail: ProjectDetail; on
       ) : (
         <p className="mt-2 text-xs text-fog">
           {entry
-            ? "Not downloaded yet. Fine-tuning needs the weights on this Mac."
+            ? "Not downloaded yet. Fine-tuning needs the weights on this computer."
             : catalogError
               ? "The list of base models could not be loaded, so this one can't be downloaded from here."
               : catalog.length === 0

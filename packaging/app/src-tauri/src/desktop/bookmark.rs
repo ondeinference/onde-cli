@@ -130,6 +130,12 @@ impl AccessGuard {
     }
 }
 
+/// Without a sandbox the "bookmark" is the path itself.
+#[cfg(not(target_os = "macos"))]
+pub fn create(path: &std::path::Path) -> Vec<u8> {
+    path.to_string_lossy().into_owned().into_bytes()
+}
+
 #[cfg(not(target_os = "macos"))]
 pub fn resolve(data: &[u8]) -> Result<Resolved, BookmarkError> {
     let path = String::from_utf8(data.to_vec()).map_err(|e| BookmarkError(e.to_string()))?;
@@ -154,7 +160,7 @@ mod tests {
 
     #[cfg(not(target_os = "macos"))]
     fn create(path: &Path) -> Result<Vec<u8>, BookmarkError> {
-        Ok(path.to_string_lossy().into_owned().into_bytes())
+        Ok(super::create(path))
     }
 
     /// The refresh comes from the open guard, and it opens to the same folder.

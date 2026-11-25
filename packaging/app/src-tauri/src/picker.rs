@@ -27,6 +27,7 @@ pub struct Request {
 }
 
 /// Show the panel and wait for the answer. `Ok(None)` means the user cancelled.
+#[cfg(target_os = "macos")]
 pub async fn pick(app: &AppHandle, request: Request) -> Result<Option<Picked>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.run_on_main_thread(move || {
@@ -78,7 +79,43 @@ fn run(request: Request) -> Result<Option<Picked>, String> {
     Ok(Some(Picked { path, bookmark }))
 }
 
+/// Show the system dialog and wait for the answer. `Ok(None)` means the user
+/// cancelled. The blocking calls must stay off the main thread.
 #[cfg(not(target_os = "macos"))]
-fn run(_request: Request) -> Result<Option<Picked>, String> {
-    Err("choosing a file or folder is only available on macOS in this build".into())
+pub async fn pick(app: &AppHandle, request: Request) -> Result<Option<Picked>, String> {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || run(&app, request))
+        .await
+        .map_err(|e| format!("opening the chooser: {e}"))?
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run(app: &AppHandle, request: Request) -> Result<Option<Picked>, String> {
+    use tauri::Manager;
+    use tauri_plugin_dialog::DialogExt;
+
+    let mut dialog = app.dialog().file().set_title(request.title);
+    if let Some(window) = app.get_webview_window("main") {
+        dialog = dialog.set_parent(&window);
+    }
+    if let Some(start) = &request.start {
+        dialog = dialog.set_directory(start);
+    }
+    let chosen = match request.mode {
+        Mode::Folder => dialog.blocking_pick_folder(),
+        Mode::File { extensions } => dialog
+            .add_filter(extensions.join(", "), extensions)
+            .blocking_pick_file(),
+    };
+    let Some(chosen) = chosen else {
+        return Ok(None);
+    };
+    let path = chosen
+        .into_path()
+        .map_err(|e| format!("the chosen item has no path ({e})"))?;
+    // There is no sandbox here, so the "bookmark" is the path itself.
+    let bookmark = request
+        .want_bookmark
+        .then(|| crate::desktop::bookmark::create(&path));
+    Ok(Some(Picked { path, bookmark }))
 }
