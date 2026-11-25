@@ -24,7 +24,12 @@ pub fn run() {
         onde_cli::paths::set_projects_dir(Some(dir));
     }
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // macOS drives NSOpenPanel itself (see `picker.rs`).
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_dialog::init());
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_os::init())
         .manage(state::PendingSignIn::default())

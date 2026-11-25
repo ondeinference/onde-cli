@@ -30,9 +30,10 @@ const pkgVersion = read(join(root, "package.json")).version;
 const appCargo = readFileSync(join(tauri, "Cargo.toml"), "utf8").match(/^version\s*=\s*"([^"]+)"/m)?.[1];
 
 const base = read(join(tauri, "tauri.conf.json"));
+// Each overlay names its platform; the checks below differ between them.
 const overlays = {
-  "tauri.prod-macos.conf.json": "com.ondeinference.desktop",
-  "tauri.prod-macos-appstore.conf.json": "com.ondeinference.desktop",
+  "tauri.prod-macos.conf.json": { platform: "macos", id: "com.ondeinference.desktop" },
+  "tauri.prod-macos-appstore.conf.json": { platform: "macos", id: "com.ondeinference.desktop" },
 };
 
 if (base.identifier !== "com.ondeinference.desktop-Debug") fail(`base identifier is ${base.identifier}`);
@@ -41,11 +42,13 @@ for (const [what, v] of [["package.json", pkgVersion], ["src-tauri/Cargo.toml", 
 }
 
 const chrome = ["titleBarStyle", "hiddenTitle", "trafficLightPosition"];
-const check = (name, cfg, id) => {
+const check = (name, cfg, id, platform = "macos") => {
   if (id && cfg.identifier !== id) fail(`${name}: identifier ${cfg.identifier}, expected ${id}`);
   if (cfg.version !== cargoVersion) fail(`${name}: version ${cfg.version} != ${cargoVersion}`);
   const win = cfg.app?.windows?.[0] ?? {};
-  for (const k of chrome) if (!(k in win)) fail(`${name}: window is missing ${k}`);
+  if (platform === "macos") {
+    for (const k of chrome) if (!(k in win)) fail(`${name}: window is missing ${k}`);
+  }
   const ent = cfg.bundle?.macOS?.entitlements;
   if (ent && !existsSync(join(tauri, ent))) fail(`${name}: entitlements ${ent} not found`);
   for (const icon of cfg.bundle?.icon ?? []) {
@@ -59,9 +62,15 @@ const check = (name, cfg, id) => {
 };
 
 check("tauri.conf.json", base, null);
-for (const [file, id] of Object.entries(overlays)) {
+// Windows builds, including `tauri dev`, fail without an .ico.
+if (!base.bundle?.icon?.some((i) => i.endsWith(".ico"))) fail("tauri.conf.json: bundle.icon lists no .ico");
+for (const [file, { platform, id }] of Object.entries(overlays)) {
   const merged = mergePatch(base, read(join(tauri, file)));
-  check(file, merged, id);
+  check(file, merged, id, platform);
+  if (platform === "windows") {
+    if (!merged.bundle?.icon?.some((i) => i.endsWith(".ico"))) fail(`${file}: bundle.icon lists no .ico`);
+    continue;
+  }
   const mac = merged.bundle?.macOS ?? {};
   // Tauri exports this as MACOSX_DEPLOYMENT_TARGET (default 10.13), and the
   // mlx-sys build refuses anything below 14.
