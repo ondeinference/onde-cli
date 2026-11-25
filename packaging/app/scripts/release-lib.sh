@@ -68,6 +68,81 @@ bundle_version() { date -u +"%Y%m%d.%H%M"; }
 # the binary (build.rs reads ONDE_DESKTOP_BUILD), so the sidebar can show it.
 export_build_number() { export ONDE_DESKTOP_BUILD="$1"; }
 
+# tauri::generate_context!() reads frontendDist (../dist) at compile time, so
+# any cargo build of the app fails on a fresh checkout until the frontend has
+# been built once. Build it before anything touches Rust.
+build_frontend() {
+  step "Frontend"
+  (cd "$APP_DIR" && pnpm install --frozen-lockfile && pnpm build)
+}
+
+# Main executable name inside Contents/MacOS, which is the cargo package name.
+APP_BINARY="${APP_BINARY:-onde-desktop}"
+
+# The frontend is already built; keep tauri build from building it again.
+NO_FRONTEND_REBUILD='{"build":{"beforeBuildCommand":""}}'
+
+# Compile the app for one architecture with tauri build, without bundling. Going
+# through tauri build (not cargo) matters: it hands the merged --config to the
+# compile through TAURI_CONFIG, so the binary embeds the release identifier and
+# product name instead of the debug ones in tauri.conf.json. The aarch64 build
+# also leaves mlx.metallib under the target directory.
+#   build_arch_binary <target triple> <tauri --config args...>
+build_arch_binary() {
+  local target="$1"; shift
+  step "Compile ${target}"
+  (cd "$APP_DIR" && pnpm tauri build --no-bundle --target "$target" \
+    "$@" --config "$NO_FRONTEND_REBUILD")
+}
+
+# Merge the two architecture builds into the path tauri bundle reads for
+# universal-apple-darwin. tauri-cli 2.12.5 spawns lipo itself and, from a shell
+# without a terminal, fails with "Failed to launch the new process ... Bad file
+# descriptor"; the same command run from bash works, so run it here.
+#   lipo_universal <target dir>
+lipo_universal() {
+  local target_dir="$1" out
+  out="${target_dir}/universal-apple-darwin/release/${APP_BINARY}"
+  step "Universal binary"
+  mkdir -p "$(dirname "$out")"
+  lipo -create -output "$out" \
+    "${target_dir}/aarch64-apple-darwin/release/${APP_BINARY}" \
+    "${target_dir}/x86_64-apple-darwin/release/${APP_BINARY}"
+  local archs; archs="$(lipo -archs "$out")"
+  [[ "$archs" == *arm64* && "$archs" == *x86_64* ]] \
+    || fail "lipo produced ${out} with architectures '${archs}', expected arm64 and x86_64."
+  ok "${out} → ${archs}"
+}
+
+# bundle.macOS.signingIdentity from a Tauri config file.
+config_signing_identity() {
+  node -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+           process.stdout.write((c.bundle && c.bundle.macOS && c.bundle.macOS.signingIdentity) || "");' "$1"
+}
+
+# Sign a bundled .app from the inside out. Tauri cannot do this for us: it signs
+# the executable and the bundle, and codesign then refuses the bundle because
+# Contents/MacOS/mlx.metallib is "not signed at all". Everything in
+# Contents/MacOS counts as code, so the metallib gets its own signature first.
+#   codesign_app <app> <identity> <entitlements plist>
+codesign_app() {
+  local app="$1" identity="$2" entitlements="$3"
+  step "Codesign"
+  [[ -n "$identity" ]] || fail "No signing identity. Set signingIdentity in the Tauri config or export the override."
+  security find-identity -v -p codesigning 2>/dev/null | grep -q -- "$identity" \
+    || fail "Signing identity ${identity} is not in the keychain.\n       Import the Apple Distribution certificate, or override the identity."
+  [[ -f "$entitlements" ]] || fail "Entitlements file not found: ${entitlements}"
+  echo "🔏  identity     → ${identity}"
+  echo "📄  entitlements → ${entitlements}"
+
+  codesign --force --timestamp=none --sign "$identity" "${app}/Contents/MacOS/mlx.metallib"
+  codesign --force --timestamp=none --sign "$identity" --entitlements "$entitlements" \
+    "${app}/Contents/MacOS/${APP_BINARY}"
+  codesign --force --timestamp=none --sign "$identity" --entitlements "$entitlements" "$app"
+  codesign --verify --deep --strict --verbose=2 "$app"
+  ok "Signed ${app}"
+}
+
 # MLX loads its Metal kernels from mlx.metallib next to the app binary. Without
 # the file, training quietly falls back to the CPU, which is many times slower.
 # mlx-sys builds it under the cargo target directory, so compile for Apple

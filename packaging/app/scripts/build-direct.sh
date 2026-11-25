@@ -42,6 +42,7 @@ do_build() {
   echo "🏷   bundleVersion → ${BUNDLE_VERSION}"
   echo "📜  profile       → ${DEVID_PROVISIONING_PROFILE_PATH}"
 
+  build_frontend
   prebuild_mlx
   METALLIB="$(mlx_metallib)"
   echo "🧩  mlx.metallib  → ${METALLIB}"

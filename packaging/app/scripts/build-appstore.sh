@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Mac App Store pipeline for Onde Desktop.
-#   build   tauri build (universal, App Store config, YYYYMMDD.HHMM build number)
+#   build   frontend, then each architecture with tauri build --no-bundle, lipo,
+#           tauri bundle --no-sign, and codesign (universal, App Store config,
+#           YYYYMMDD.HHMM build number). The script runs lipo and codesign itself
+#           because tauri-cli cannot do either for this app from a non-tty shell.
 #   sign    productbuild, signed with the 3rd Party Mac Developer Installer cert
 #   upload  altool upload to App Store Connect
 #
@@ -11,6 +14,7 @@
 #                                API_PRIVATE_KEYS_DIR or ~/.appstoreconnect/private_keys
 #   MAS_PROVISIONING_PROFILE_PATH  default: the private apple-certificates checkout
 #   SIGNING_IDENTITY             installer identity; default: looked up in the keychain
+#   MAS_SIGNING_IDENTITY         app identity; default: signingIdentity in the App Store config
 #   DEVELOPER_DIR                a release Xcode; default: picked automatically
 #   BUNDLE_VERSION               default: now, UTC
 set -euo pipefail
@@ -35,20 +39,30 @@ do_build() {
   echo "🏷   bundleVersion → ${BUNDLE_VERSION}"
   echo "📜  profile       → ${MAS_PROVISIONING_PROFILE_PATH}"
 
-  prebuild_mlx
+  build_frontend
+  build_arch_binary aarch64-apple-darwin --config "$CONFIG"
+  build_arch_binary x86_64-apple-darwin  --config "$CONFIG"
   METALLIB="$(mlx_metallib)"
   echo "🧩  mlx.metallib  → ${METALLIB}"
+  lipo_universal "$TARGET_DIR"
 
-  # --config values merge in order; the file is never modified.
-  (cd "$APP_DIR" && pnpm tauri build \
+  # --config values merge in order; the file is never modified. --no-sign
+  # because codesign_app signs the bundle below.
+  step "Bundle"
+  rm -rf "$APP_PATH"
+  (cd "$APP_DIR" && pnpm tauri bundle \
     --bundles app \
     --target universal-apple-darwin \
+    --no-sign \
     --config "$CONFIG" \
     --config "$(config_json "$BUNDLE_VERSION" "$MAS_PROVISIONING_PROFILE_PATH" "$METALLIB")")
 
-  [[ -d "$APP_PATH" ]] || fail "Build succeeded but the .app is not at: ${APP_PATH}"
-  verify_codesign_matches_profile "$APP_PATH"
+  [[ -d "$APP_PATH" ]] || fail "Bundling succeeded but the .app is not at: ${APP_PATH}"
   require_metallib "$APP_PATH"
+  codesign_app "$APP_PATH" \
+    "${MAS_SIGNING_IDENTITY:-$(config_signing_identity "$CONFIG")}" \
+    "${TAURI_DIR}/Entitlements-appstore.plist"
+  verify_codesign_matches_profile "$APP_PATH"
   require_entitlements "$APP_PATH" \
     com.apple.security.app-sandbox \
     com.apple.security.network.client \
