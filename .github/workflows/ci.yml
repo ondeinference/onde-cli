@@ -183,6 +183,10 @@ jobs:
       GRESIQ_API_KEY: ${{ secrets.GRESIQ_API_KEY || 'ci-placeholder' }}
       GRESIQ_API_SECRET: ${{ secrets.GRESIQ_API_SECRET || 'ci-placeholder' }}
       HF_TOKEN: ${{ secrets.HF_TOKEN || 'ci-placeholder' }}
+      # The app optimizes every dependency in dev builds so `tauri dev` can
+      # train at a usable speed. CI only lints and tests, so skip that and the
+      # debug info; both made these jobs take an hour or more.
+      CI_PROFILE: --config profile.dev.package."*".opt-level=0 --config profile.dev.debug=0
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -223,11 +227,11 @@ jobs:
 
       - name: Lint
         working-directory: packaging/app/src-tauri
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy $CI_PROFILE --locked --all-targets -- -D warnings
 
       - name: Test
         working-directory: packaging/app/src-tauri
-        run: cargo test --locked
+        run: cargo test $CI_PROFILE --locked
 
   dotnet-tool:
     name: .NET tool launcher build
