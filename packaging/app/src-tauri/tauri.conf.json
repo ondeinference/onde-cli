@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "productName": "Onde Desktop (Debug)",
   "identifier": "com.ondeinference.desktop-Debug",
   "build": {
