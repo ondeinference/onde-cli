@@ -26,6 +26,9 @@ mod tests {
 
     #[test]
     fn returns_the_configured_build() {
-        assert_eq!(build_number(Some("20261117.1203")).as_deref(), Some("20261117.1203"));
+        assert_eq!(
+            build_number(Some("20261117.1203")).as_deref(),
+            Some("20261117.1203")
+        );
     }
 }

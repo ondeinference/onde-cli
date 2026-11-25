@@ -104,7 +104,7 @@ fn run(app: &AppHandle, request: Request) -> Result<Option<Picked>, String> {
     let chosen = match request.mode {
         Mode::Folder => dialog.blocking_pick_folder(),
         Mode::File { extensions } => dialog
-            .add_filter(extensions.join(", "), extensions)
+            .add_filter("Supported files", extensions)
             .blocking_pick_file(),
     };
     let Some(chosen) = chosen else {
